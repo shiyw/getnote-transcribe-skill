@@ -1,11 +1,20 @@
 import json
+import importlib.util
+import sys
 import tempfile
 import unittest
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-import getnote_url_workflow as workflow
+
+SCRIPT_PATH = Path(__file__).parent / "skills" / "getnote-transcribe" / "scripts" / "getnote_url_workflow.py"
+spec = importlib.util.spec_from_file_location("getnote_url_workflow_for_tests", SCRIPT_PATH)
+if spec is None or spec.loader is None:
+    raise RuntimeError(f"Cannot load workflow script at {SCRIPT_PATH}")
+workflow = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = workflow
+spec.loader.exec_module(workflow)
 
 
 class GetNoteWorkflowTests(unittest.TestCase):

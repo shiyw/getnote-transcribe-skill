@@ -1,0 +1,4 @@
+interface:
+  display_name: "GetNote Transcribe"
+  short_description: "Save URLs to GetNote and export summaries"
+  default_prompt: "Use $getnote-transcribe to save this URL into GetNote, wait for processing, add tags, and export the summary plus original content."

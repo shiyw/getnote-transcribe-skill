@@ -1,6 +1,16 @@
 # getnote-transcribe-skill
 
-API-only GetNote URL save/read/export workflow. It saves URLs through GetNote OpenAPI, waits for processing, adds manual tags, reads note detail, and exports AI summary plus `web_page.content`.
+API-only GetNote URL save/read/export skill. It saves URLs through GetNote OpenAPI, waits for processing, adds manual tags, reads note detail, and exports AI summary plus `web_page.content`.
+
+## Codex Skill
+
+The installable skill lives in `skills/getnote-transcribe/`. Invoke it as `$getnote-transcribe` when you want Codex to save URLs into GetNote and export summaries plus source content.
+
+The workflow script is bundled inside the skill:
+
+```bash
+python3 skills/getnote-transcribe/scripts/getnote_url_workflow.py --help
+```
 
 ## Setup
 
@@ -23,7 +33,7 @@ The script does not require the `getnote` CLI. It only uses OpenAPI:
 Single URL:
 
 ```bash
-python3 getnote_url_workflow.py \
+python3 skills/getnote-transcribe/scripts/getnote_url_workflow.py \
   --url https://www.iana.org/help/example-domains \
   --title "Example domains" \
   --tag GetNote转译 \
@@ -33,7 +43,7 @@ python3 getnote_url_workflow.py \
 Batch URL list:
 
 ```bash
-python3 getnote_url_workflow.py \
+python3 skills/getnote-transcribe/scripts/getnote_url_workflow.py \
   --url-list urls.txt \
   --tag GetNote转译 \
   --output-dir getnote_exports \
@@ -68,5 +78,5 @@ If no `--tag` is provided in batch mode, the default tag is `GetNote转译`.
 
 ```bash
 python3 -m unittest test_getnote_workflow.py
-PYTHONPYCACHEPREFIX=/private/tmp/getnote-transcribe-pycache python3 -m py_compile getnote_url_workflow.py test_getnote_workflow.py
+python3 -m py_compile skills/getnote-transcribe/scripts/getnote_url_workflow.py test_getnote_workflow.py
 ```
