@@ -1,0 +1,5 @@
+.env
+__pycache__/
+*.py[cod]
+getnote_exports/
+getnote_manifest.jsonl
