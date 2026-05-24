@@ -137,8 +137,6 @@ def build_save_link_payload(url: str, title: str = "", tags: list[str] | None = 
     }
     if title:
         payload["title"] = title
-    if tags:
-        payload["tags"] = tags
     return payload
 
 

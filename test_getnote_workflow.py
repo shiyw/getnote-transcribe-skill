@@ -51,7 +51,6 @@ class GetNoteWorkflowTests(unittest.TestCase):
                 "note_type": "link",
                 "link_url": "https://example.com/article",
                 "title": "Example title",
-                "tags": ["GetNote转译", "AI"],
             },
         )
 
@@ -103,6 +102,53 @@ class GetNoteWorkflowTests(unittest.TestCase):
         payload = json.loads(stderr.getvalue())
         self.assertFalse(payload["success"])
         self.assertEqual(payload["error"], "quota exhausted")
+
+    def test_run_single_workflow_adds_tags_after_save(self):
+        class FakeAPI:
+            def __init__(self):
+                self.posts = []
+
+            def post(self, path, body):
+                self.posts.append((path, body))
+                if path == "/open/api/v1/resource/note/save":
+                    return {"success": True, "data": {"note_id": "1901"}}
+                if path == "/open/api/v1/resource/note/tags/add":
+                    return {"success": True, "data": {"tags": body["tags"]}}
+                raise AssertionError(f"unexpected post: {path}")
+
+            def get(self, path, query=None):
+                return {
+                    "success": True,
+                    "data": {
+                        "note": {
+                            "note_id": "1901",
+                            "title": "Saved",
+                            "content": "Summary",
+                            "web_page": {"url": "https://example.com", "content": "Body"},
+                            "tags": [{"name": "GetNote转译"}],
+                        }
+                    },
+                }
+
+        api = FakeAPI()
+
+        result = workflow.run_single_workflow(
+            api,
+            "https://example.com",
+            title="",
+            tags=["GetNote转译"],
+            task_interval=0,
+            task_timeout=1,
+            emit_events=False,
+        )
+
+        self.assertEqual(
+            [path for path, _ in api.posts],
+            ["/open/api/v1/resource/note/save", "/open/api/v1/resource/note/tags/add"],
+        )
+        self.assertNotIn("tags", api.posts[0][1])
+        self.assertEqual(api.posts[1][1], {"note_id": "1901", "tags": ["GetNote转译"]})
+        self.assertEqual(result["tags"], {"success": True, "data": {"tags": ["GetNote转译"]}})
 
 
 if __name__ == "__main__":
