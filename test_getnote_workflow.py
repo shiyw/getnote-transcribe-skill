@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 SCRIPT_PATH = Path(__file__).parent / "skills" / "getnote-transcribe" / "scripts" / "getnote_url_workflow.py"
@@ -32,6 +32,20 @@ class GetNoteWorkflowTests(unittest.TestCase):
         self.assertEqual(credentials.api_key, "gk_live_test_key")
         self.assertEqual(credentials.client_id, "cli_test_client")
 
+    def test_load_env_file_accepts_export_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text(
+                "export GETNOTE_API_KEY='gk_live_test_key'\n"
+                'export GETNOTE_CLIENT_ID="cli_test_client"\n',
+                encoding="utf-8",
+            )
+
+            values = workflow.load_env_file(env_path)
+
+        self.assertEqual(values["GETNOTE_API_KEY"], "gk_live_test_key")
+        self.assertEqual(values["GETNOTE_CLIENT_ID"], "cli_test_client")
+
     def test_parse_url_list_skips_blank_lines_and_comments(self):
         with tempfile.TemporaryDirectory() as tmp:
             list_path = Path(tmp) / "urls.txt"
@@ -51,7 +65,6 @@ class GetNoteWorkflowTests(unittest.TestCase):
         payload = workflow.build_save_link_payload(
             "https://example.com/article",
             title="Example title",
-            tags=["GetNote转译", "AI"],
         )
 
         self.assertEqual(
@@ -95,6 +108,25 @@ class GetNoteWorkflowTests(unittest.TestCase):
         stem = workflow.make_output_stem(3, "https://example.com/path/to?a=1")
 
         self.assertRegex(stem, r"^0003-example-com-[0-9a-f]{10}$")
+
+    def test_is_http_url_rejects_whitespace_in_url(self):
+        self.assertFalse(workflow.is_http_url("https://exa mple.com/article"))
+        self.assertFalse(workflow.is_http_url("https://example.com/a b"))
+
+    def test_api_rejects_non_object_json_response(self):
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = b'["unexpected"]'
+
+        api = workflow.GetNoteAPI(
+            workflow.ApiCredentials(api_key="gk_live_test", client_id="cli_test"),
+            base_url="https://example.com",
+            timeout=1,
+        )
+        with patch("urllib.request.urlopen", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "non-object JSON"):
+                api.get("/test")
 
     def test_main_prints_json_error_without_traceback(self):
         stderr = StringIO()

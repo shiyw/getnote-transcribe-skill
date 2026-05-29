@@ -80,7 +80,9 @@ class GetNoteAPI:
         except (OSError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"GetNote API failed: {exc}") from exc
 
-        if isinstance(payload, dict) and payload.get("success") is False:
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"GetNote API returned non-object JSON: {type(payload).__name__}")
+        if payload.get("success") is False:
             raise RuntimeError(f"GetNote API returned error: {json.dumps(payload.get('error') or payload, ensure_ascii=False)}")
         return payload
 
@@ -105,6 +107,8 @@ def load_env_file(path: Path) -> dict[str, str]:
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue
+        if stripped.startswith("export "):
+            stripped = stripped[len("export ") :].strip()
         key, value = stripped.split("=", 1)
         key = key.strip()
         value = value.strip().strip("\"'")
@@ -127,7 +131,7 @@ def parse_url_list(path: Path) -> list[str]:
     return urls
 
 
-def build_save_link_payload(url: str, title: str = "", tags: list[str] | None = None) -> dict[str, Any]:
+def build_save_link_payload(url: str, title: str = "") -> dict[str, Any]:
     if not is_http_url(url):
         raise ValueError(f"Only http/https URLs are supported: {url}")
 
@@ -140,8 +144,8 @@ def build_save_link_payload(url: str, title: str = "", tags: list[str] | None = 
     return payload
 
 
-def save_link(api: GetNoteAPI, url: str, title: str, tags: list[str]) -> dict[str, Any]:
-    return api.post("/open/api/v1/resource/note/save", build_save_link_payload(url, title=title, tags=tags))
+def save_link(api: GetNoteAPI, url: str, title: str) -> dict[str, Any]:
+    return api.post("/open/api/v1/resource/note/save", build_save_link_payload(url, title=title))
 
 
 def wait_for_task(
@@ -153,11 +157,9 @@ def wait_for_task(
 ) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     last_status = ""
-    last_payload: dict[str, Any] = {}
 
     while time.monotonic() < deadline:
         payload = api.post("/open/api/v1/resource/note/task/progress", {"task_id": task_id})
-        last_payload = payload
         data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
         status = str(data.get("status") or "")
         if emit_events and status and status != last_status:
@@ -267,7 +269,7 @@ def run_single_workflow(
         "note": {},
     }
 
-    save_payload = save_link(api, url, title=title, tags=tags)
+    save_payload = save_link(api, url, title=title)
     result["save"] = save_payload
 
     task_id = extract_task_id(save_payload)
@@ -438,8 +440,16 @@ def normalize_tags(tags: list[str], default_if_empty: bool) -> list[str]:
 
 
 def is_http_url(value: str) -> bool:
+    if not value or any(char.isspace() for char in value):
+        return False
     parsed = urllib.parse.urlparse(value)
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or not parsed.hostname:
+        return False
+    try:
+        parsed.port
+    except ValueError:
+        return False
+    return True
 
 
 def build_parser() -> argparse.ArgumentParser:
