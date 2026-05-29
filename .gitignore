@@ -2,5 +2,6 @@
 .DS_Store
 __pycache__/
 *.py[cod]
+.uv-cache/
 getnote_exports/
 getnote_manifest.jsonl
