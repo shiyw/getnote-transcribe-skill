@@ -16,6 +16,14 @@ workflow = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = workflow
 spec.loader.exec_module(workflow)
 
+DESKTOP_SCRIPT_PATH = Path(__file__).parent / "skills" / "getnote-transcribe" / "scripts" / "getnote_desktop_original.py"
+desktop_spec = importlib.util.spec_from_file_location("getnote_desktop_original_for_tests", DESKTOP_SCRIPT_PATH)
+if desktop_spec is None or desktop_spec.loader is None:
+    raise RuntimeError(f"Cannot load desktop original script at {DESKTOP_SCRIPT_PATH}")
+desktop_original = importlib.util.module_from_spec(desktop_spec)
+sys.modules[desktop_spec.name] = desktop_original
+desktop_spec.loader.exec_module(desktop_original)
+
 
 class GetNoteWorkflowTests(unittest.TestCase):
     def test_load_credentials_uses_project_env_file(self):
@@ -190,6 +198,87 @@ class GetNoteWorkflowTests(unittest.TestCase):
         self.assertNotIn("tags", api.posts[0][1])
         self.assertEqual(api.posts[1][1], {"note_id": "1901", "tags": ["GetNote转译"]})
         self.assertEqual(result["tags"], {"success": True, "data": {"tags": ["GetNote转译"]}})
+
+    def test_desktop_original_formats_sentence_list_as_markdown(self):
+        payload = {
+            "h": {"c": 0, "e": ""},
+            "c": {
+                "asr_version": 0,
+                "has_optimized_asr": False,
+                "content": json.dumps(
+                    {
+                        "sentence_list": [
+                            {
+                                "start_time": 39090,
+                                "end_time": 42010,
+                                "text": "hellohello，可以听到吗?",
+                                "speaker_id": 0,
+                            },
+                            {
+                                "start_time": 3814000,
+                                "end_time": 3820000,
+                                "text": "用 Stripe 配合个人港卡。",
+                                "speaker_id": 1,
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        }
+
+        markdown = desktop_original.transcript_markdown(payload)
+
+        self.assertIn("Sentence segments: 2", markdown)
+        self.assertIn("[00:39 - 00:42] **Speaker 1**: hellohello，可以听到吗?", markdown)
+        self.assertIn("[01:03:34 - 01:03:40] **Speaker 2**: 用 Stripe 配合个人港卡。", markdown)
+
+    def test_desktop_original_extracts_and_sorts_jwt_candidates(self):
+        older = (
+            "eyJhbGciOiJIUzI1NiJ9."
+            "eyJleHAiOjEwMCwidWlkIjoiMSJ9."
+            "signature"
+        )
+        newer = (
+            "eyJhbGciOiJIUzI1NiJ9."
+            "eyJleHAiOjIwMCwidWlkIjoiMSJ9."
+            "signature"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            storage_dir = Path(tmp)
+            (storage_dir / "000003.log").write_bytes(f"token={older}\ntoken={newer}\ntoken={older}".encode())
+
+            tokens = desktop_original.load_desktop_tokens(storage_dir)
+
+        self.assertEqual(tokens, [newer, older])
+
+    def test_desktop_original_note_id_stays_string(self):
+        parser = desktop_original.build_parser()
+        args = parser.parse_args(["1912003447071346264"])
+
+        self.assertEqual(args.note_id, "1912003447071346264")
+
+    def test_desktop_original_requests_private_original_endpoint(self):
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = json.dumps({"h": {"c": 0}, "c": {"content": "{}"}}).encode()
+
+        with patch("urllib.request.urlopen", return_value=response) as urlopen:
+            payload = desktop_original.request_original_note(
+                "https://get-notes.luojilab.com",
+                "1912003447071346264",
+                "token-value",
+                timeout=1,
+            )
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(
+            request.full_url,
+            "https://get-notes.luojilab.com/voicenotes/web/notes/1912003447071346264/original",
+        )
+        self.assertEqual(request.headers["Authorization"], "Bearer token-value")
+        self.assertEqual(payload["h"]["c"], 0)
 
 
 if __name__ == "__main__":

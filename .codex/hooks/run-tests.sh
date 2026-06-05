@@ -8,7 +8,7 @@ set -euo pipefail
 
 out="$(mktemp -t codex-runtest.XXXXXX)"
 set +e
-./runtest.sh >"$out" 2>&1
+bash ./runtest.sh >"$out" 2>&1
 status=$?
 set -e
 
@@ -19,7 +19,7 @@ if [ "$status" -eq 0 ]; then
 fi
 
 {
-  echo "测试失败。复现命令：./runtest.sh"
+  echo "测试失败。复现命令：bash ./runtest.sh"
   sed -n '1,160p' "$out"
   echo
   echo "退出码：$status"
