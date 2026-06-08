@@ -1,0 +1,4 @@
+interface:
+  display_name: "GetNote Note Original"
+  short_description: "Export a private GetNote original transcript for an existing note_id"
+  default_prompt: "Use $getnote-note-original to fetch an existing GetNote note_id through the desktop login-state /original endpoint and export the transcript."

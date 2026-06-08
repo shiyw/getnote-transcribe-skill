@@ -1,0 +1,4 @@
+interface:
+  display_name: "GetNote URL Import"
+  short_description: "Save public URLs to GetNote through OpenAPI and export summary plus source text"
+  default_prompt: "Use $getnote-url-import to save public http/https URLs into GetNote through OpenAPI, apply tags, and export the summary plus original/source text."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "GetNote Local Media"
+  short_description: "Import a local audio/video file into GetNote and export the private transcript"
+  default_prompt: "Use $getnote-local-media for 本地音视频自动导入: dry-run first when appropriate, then upload through GetNote web flow and export /original."

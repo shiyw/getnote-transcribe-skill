@@ -1,47 +1,40 @@
 # getnote-transcribe-skill
 
-GetNote save/read/export skill. It saves public URLs through GetNote OpenAPI, waits for processing, adds manual tags, reads note detail, and exports AI summary plus source content. For local audio uploaded through the GetNote desktop app, it can export the private `/original` transcript using the desktop login state, without creating public share links.
+GetNote import/transcript skills. The repo keeps the old `$getnote-transcribe` entry as a thin router and splits real work into scene skills so public URLs, private originals, and local media imports do not trigger each other by accident.
 
-## Codex Skill
+## Skill Layout
 
-The installable skill lives in `skills/getnote-transcribe/`. Invoke it as `$getnote-transcribe` when you want Codex to save URLs into GetNote and export summaries plus source content.
+- `skills/getnote-transcribe/`: compatibility router.
+- `skills/getnote-url-import/`: public URL -> OpenAPI save -> summary/source export.
+- `skills/getnote-note-original/`: existing `note_id` -> desktop login-state `/original` transcript.
+- `skills/getnote-local-media/`: 本地音视频自动导入 -> OSS upload -> `local_audio` note -> `/original` transcript.
+- `skills/_shared/`: shared desktop token, Bearer header, `/original` parsing, and transcript Markdown helpers.
 
-The public URL workflow script is bundled inside the skill:
-
-```bash
-python3 skills/getnote-transcribe/scripts/getnote_url_workflow.py --help
-```
-
-The private desktop original transcript exporter is also bundled:
-
-```bash
-python3 skills/getnote-transcribe/scripts/getnote_desktop_original.py --help
-```
+The old script paths in `skills/getnote-transcribe/scripts/` remain as compatibility wrappers.
 
 ## Setup
 
-Create `.env` in this directory:
+URL import needs OpenAPI credentials:
 
 ```bash
 GETNOTE_API_KEY=gk_live_xxx
 GETNOTE_CLIENT_ID=cli_xxx
 ```
 
-The URL workflow does not require the `getnote` CLI. It only uses OpenAPI:
+Private original and local media flows use the GetNote desktop login state from:
 
-- `POST /open/api/v1/resource/note/save`
-- `POST /open/api/v1/resource/note/task/progress`
-- `POST /open/api/v1/resource/note/tags/add`
-- `GET /open/api/v1/resource/note/detail?id=...`
+```text
+~/Library/Application Support/iget-biji-desktop/Local Storage/leveldb
+```
 
-The desktop original workflow does not use OpenAPI credentials. It reads candidate JWTs from the local GetNote desktop LevelDB storage, or from `GETNOTE_WEB_TOKEN` if explicitly provided. Do not print these tokens.
+or `GETNOTE_WEB_TOKEN` if explicitly provided. Never print tokens.
 
 ## Usage
 
-Single URL:
+Public URL:
 
 ```bash
-python3 skills/getnote-transcribe/scripts/getnote_url_workflow.py \
+python3 skills/getnote-url-import/scripts/getnote_url_workflow.py \
   --url https://www.iana.org/help/example-domains \
   --title "Example domains" \
   --tag GetNote转译 \
@@ -51,63 +44,56 @@ python3 skills/getnote-transcribe/scripts/getnote_url_workflow.py \
 Batch URL list:
 
 ```bash
-python3 skills/getnote-transcribe/scripts/getnote_url_workflow.py \
+python3 skills/getnote-url-import/scripts/getnote_url_workflow.py \
   --url-list urls.txt \
   --tag GetNote转译 \
   --output-dir getnote_exports \
   --manifest getnote_manifest.jsonl
 ```
 
-`urls.txt` is plain text, one URL per line:
-
-```text
-# blank lines and comments are ignored
-https://www.iana.org/help/example-domains
-https://www.iana.org/domains/reserved
-```
-
-Batch mode writes:
-
-- raw JSON: `getnote_exports/json/*.json`
-- readable Markdown: `getnote_exports/markdown/*.md`
-- resumable manifest: `getnote_manifest.jsonl`
-
-If no `--tag` is provided in batch mode, the default tag is `GetNote转译`.
-
-Existing GetNote desktop note, such as `local_audio` uploaded through the app:
+Existing note original:
 
 ```bash
-python3 skills/getnote-transcribe/scripts/getnote_desktop_original.py \
+python3 skills/getnote-note-original/scripts/getnote_desktop_original.py \
   1912003447071346264 \
   --output transcript.md \
   --raw-json original.json
 ```
 
-This calls the private web endpoint:
+Local media dry-run:
 
-```text
-GET https://get-notes.luojilab.com/voicenotes/web/notes/{note_id}/original
+```bash
+python3 skills/getnote-local-media/scripts/getnote_local_media_workflow.py \
+  ./audio.mp3 \
+  --dry-run
 ```
 
-The response stores the transcript as a JSON string in `c.content`; `sentence_list` is formatted into Markdown with timestamps and speaker labels.
+Local media import:
 
-## Gotchas
+```bash
+python3 skills/getnote-local-media/scripts/getnote_local_media_workflow.py \
+  ./audio.mp3 \
+  --output transcript.md \
+  --raw-original-json original.json \
+  --raw-sse-jsonl events.jsonl
+```
 
-- `/note/save` does not apply manual tags even if `tags` is included in the save payload. The script intentionally calls `/note/tags/add` after it has a `note_id`.
-- `content` is the AI summary. The full source body is usually `web_page.content`; future `web_content` is also supported if the API starts returning it.
-- App-uploaded `local_audio` notes do not expose transcripts in normal note detail. In verified CLI output they only returned `content`, `created_at`, `id`, `note_id`, `note_type`, `tags`, `title`, and `updated_at`; `content` was the AI summary, not the verbatim transcript.
-- For app-uploaded audio, use `getnote_desktop_original.py` and the desktop login state. Do not create or use public share URLs unless the user explicitly asks for that mode.
-- The desktop token may expire. If every candidate token fails with login/auth errors, open GetNote desktop and let it refresh login state, or pass a fresh token through `GETNOTE_WEB_TOKEN`.
-- GetNote may return QPS errors (`10202 qps_bucket_exceeded`). Wait and retry; the manifest lets batch mode resume successful URLs.
-- `task/progress` can return `status: success` with a stale `error_msg`. The script trusts `status`, then confirms by reading note detail.
-- Write-note quota is separate from read quota. Real E2E tests consume save quota; prefer using existing note IDs for read-only checks.
+## Boundaries
+
+- Do not create public share links unless the user explicitly asks for public sharing.
+- URL import uses OpenAPI only and must not read desktop tokens.
+- Existing `note_id` original export must not call OpenAPI URL save.
+- 本地音视频自动导入 is a script-backed workflow, not a product concept named "CLI upload".
+- `--dry-run` checks local file, transcode plan, and token availability only; it must not request upload tokens, PUT OSS, or create notes.
+- OpenAPI detail source text comes from `web_content`, `web_page.content`, or `audio.original`; `content` is the AI summary.
+- Private `/original` stores transcript data as JSON in `c.content.sentence_list`.
 
 ## Verification
 
 ```bash
-python3 -m unittest test_getnote_workflow.py
-python3 -m py_compile \
-  skills/getnote-transcribe/scripts/getnote_url_workflow.py \
-  skills/getnote-transcribe/scripts/getnote_desktop_original.py \
-  test_getnote_workflow.py
+bash ./runtest.sh
+bash .codex/hooks/run-tests.sh
+python3 skills/getnote-url-import/scripts/getnote_url_workflow.py --help
+python3 skills/getnote-note-original/scripts/getnote_desktop_original.py --help
+python3 skills/getnote-local-media/scripts/getnote_local_media_workflow.py --help
 ```

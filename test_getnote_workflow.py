@@ -8,24 +8,47 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 
-SCRIPT_PATH = Path(__file__).parent / "skills" / "getnote-transcribe" / "scripts" / "getnote_url_workflow.py"
-spec = importlib.util.spec_from_file_location("getnote_url_workflow_for_tests", SCRIPT_PATH)
-if spec is None or spec.loader is None:
-    raise RuntimeError(f"Cannot load workflow script at {SCRIPT_PATH}")
-workflow = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = workflow
-spec.loader.exec_module(workflow)
+REPO_ROOT = Path(__file__).parent
+SKILLS_ROOT = REPO_ROOT / "skills"
+URL_SCRIPT_PATH = SKILLS_ROOT / "getnote-url-import" / "scripts" / "getnote_url_workflow.py"
+DESKTOP_SCRIPT_PATH = SKILLS_ROOT / "getnote-note-original" / "scripts" / "getnote_desktop_original.py"
+LOCAL_MEDIA_SCRIPT_PATH = SKILLS_ROOT / "getnote-local-media" / "scripts" / "getnote_local_media_workflow.py"
 
-DESKTOP_SCRIPT_PATH = Path(__file__).parent / "skills" / "getnote-transcribe" / "scripts" / "getnote_desktop_original.py"
-desktop_spec = importlib.util.spec_from_file_location("getnote_desktop_original_for_tests", DESKTOP_SCRIPT_PATH)
-if desktop_spec is None or desktop_spec.loader is None:
-    raise RuntimeError(f"Cannot load desktop original script at {DESKTOP_SCRIPT_PATH}")
-desktop_original = importlib.util.module_from_spec(desktop_spec)
-sys.modules[desktop_spec.name] = desktop_original
-desktop_spec.loader.exec_module(desktop_original)
+
+def load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load module at {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+workflow = load_module("getnote_url_workflow_for_tests", URL_SCRIPT_PATH)
+desktop_original = load_module("getnote_desktop_original_for_tests", DESKTOP_SCRIPT_PATH)
+local_media = load_module("getnote_local_media_workflow_for_tests", LOCAL_MEDIA_SCRIPT_PATH)
 
 
 class GetNoteWorkflowTests(unittest.TestCase):
+    def test_skill_router_and_scene_skills_exist(self):
+        expected = {
+            "getnote-transcribe": ["getnote-url-import", "getnote-note-original", "getnote-local-media"],
+            "getnote-url-import": ["--url", "--url-list", "OpenAPI"],
+            "getnote-note-original": ["note_id", "/original", "desktop"],
+            "getnote-local-media": ["本地音视频自动导入", "--dry-run", "stream_on_local_audio"],
+        }
+        for skill_name, needles in expected.items():
+            skill_path = SKILLS_ROOT / skill_name / "SKILL.md"
+            self.assertTrue(skill_path.exists(), skill_path)
+            text = skill_path.read_text(encoding="utf-8")
+            for needle in needles:
+                self.assertIn(needle, text)
+
+        router_agent = (SKILLS_ROOT / "getnote-transcribe" / "agents" / "openai.yaml").read_text(encoding="utf-8")
+        self.assertIn("route", router_agent.lower())
+        self.assertNotIn("save this URL into GetNote", router_agent)
+
     def test_load_credentials_uses_project_env_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"
@@ -111,6 +134,16 @@ class GetNoteWorkflowTests(unittest.TestCase):
         self.assertEqual(summary["tag_names"], ["GetNote转译", "AI"])
         self.assertEqual(summary["ai_summary"], "AI summary")
         self.assertEqual(summary["web_content"], "Full web content")
+
+    def test_summarize_note_payload_reads_all_source_text_fields(self):
+        for note, expected in [
+            ({"web_content": "Top level source"}, "Top level source"),
+            ({"web_page": {"content": "Web page source"}}, "Web page source"),
+            ({"audio": {"original": "Audio original transcript"}}, "Audio original transcript"),
+        ]:
+            with self.subTest(expected=expected):
+                summary = workflow.summarize_note_payload({"success": True, "data": {"note": note}})
+                self.assertEqual(summary["web_content"], expected)
 
     def test_make_output_stem_is_stable_and_url_safe(self):
         stem = workflow.make_output_stem(3, "https://example.com/path/to?a=1")
@@ -257,6 +290,118 @@ class GetNoteWorkflowTests(unittest.TestCase):
         args = parser.parse_args(["1912003447071346264"])
 
         self.assertEqual(args.note_id, "1912003447071346264")
+
+    def test_local_media_builds_upload_token_payload_from_file_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            media_path = Path(tmp) / "demo source.mp3"
+            media_path.write_bytes(b"audio-bytes")
+
+            payload = local_media.build_upload_token_payload(media_path, duration_ms=1234, media_type="mp3")
+
+        self.assertEqual(payload["duration_ms"], 1234)
+        self.assertEqual(payload["local_name"], "demo source.mp3")
+        self.assertEqual(payload["size_byte"], len(b"audio-bytes"))
+        self.assertEqual(payload["type"], "mp3")
+        self.assertEqual(payload["md5"], "SC2rEZSOT69RUTUvQZQ/xg==")
+
+    def test_local_media_upload_token_request_uses_private_endpoint(self):
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = b'{"h":{"c":0},"c":{"upload_id":"up_1"}}'
+
+        with patch("urllib.request.urlopen", return_value=response) as urlopen:
+            result = local_media.request_media_upload_token(
+                "https://example.com",
+                token="secret-token",
+                payload={"duration_ms": 1234},
+                timeout=1,
+            )
+
+        request = urlopen.call_args.args[0]
+        headers = {key.lower(): value for key, value in request.header_items()}
+        self.assertEqual(request.full_url, "https://example.com/voicenotes/web/notes/local_audio/token")
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(headers["authorization"], "Bearer secret-token")
+        self.assertEqual(headers["content-type"], "application/json")
+        self.assertEqual(result["c"]["upload_id"], "up_1")
+
+    def test_local_media_put_to_oss_uses_required_headers(self):
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = b""
+
+        with patch("urllib.request.urlopen", return_value=response) as urlopen:
+            local_media.put_media_to_oss(
+                "https://oss.example.com/audio.mp3",
+                data=b"audio-bytes",
+                content_type="audio/mpeg",
+                content_md5="LrHbuVJlU/qTT1jELCXkpg==",
+                callback="callback-payload",
+                timeout=1,
+            )
+
+        request = urlopen.call_args.args[0]
+        headers = {key.lower(): value for key, value in request.header_items()}
+        self.assertEqual(request.get_method(), "PUT")
+        self.assertEqual(headers["x-oss-callback"], "callback-payload")
+        self.assertEqual(headers["content-type"], "audio/mpeg")
+        self.assertEqual(headers["content-md5"], "LrHbuVJlU/qTT1jELCXkpg==")
+
+    def test_local_media_create_note_uses_stream_on_local_audio(self):
+        payload = local_media.build_local_audio_payload(
+            title="Demo",
+            audio_url="https://oss.example.com/audio.mp3",
+            file_id="file_1",
+            duration_ms=1234,
+            local_name="demo.mp3",
+            size_byte=10,
+            media_type="mp3",
+        )
+        self.assertEqual(payload["note_type"], "local_audio")
+        self.assertEqual(payload["source"], "web")
+        self.assertEqual(payload["audio"]["file_id"], "file_1")
+
+        with patch.object(local_media, "stream_sse_json", return_value=[{"note_id": "1901"}]) as stream:
+            events = local_media.request_local_audio_note(
+                "https://example.com",
+                token="secret-token",
+                payload=payload,
+                timeout=1,
+                raw_sse_path=None,
+            )
+
+        stream.assert_called_once_with(
+            "https://example.com",
+            "/voicenotes/web/topics/notes/stream_on_local_audio",
+            "secret-token",
+            payload,
+            1,
+            raw_sse_path=None,
+        )
+        self.assertEqual(events, [{"note_id": "1901"}])
+
+    def test_local_media_dry_run_does_not_write_remote_or_print_token(self):
+        stdout = StringIO()
+        stderr = StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            media_path = Path(tmp) / "demo.mp3"
+            media_path.write_bytes(b"audio-bytes")
+
+            with patch.object(local_media, "load_tokens", return_value=["secret-token"]), patch.object(
+                local_media, "request_media_upload_token"
+            ) as upload_token, patch.object(local_media, "put_media_to_oss") as put_oss, patch.object(
+                local_media, "request_local_audio_note"
+            ) as create_note, patch("sys.stdout", stdout), patch("sys.stderr", stderr):
+                code = local_media.main([str(media_path), "--dry-run"])
+
+        self.assertEqual(code, 0)
+        upload_token.assert_not_called()
+        put_oss.assert_not_called()
+        create_note.assert_not_called()
+        self.assertNotIn("secret-token", stdout.getvalue())
+        self.assertNotIn("secret-token", stderr.getvalue())
 
     def test_desktop_original_requests_private_original_endpoint(self):
         response = Mock()
