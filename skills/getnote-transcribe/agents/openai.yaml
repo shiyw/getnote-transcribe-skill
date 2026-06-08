@@ -1,4 +1,4 @@
 interface:
   display_name: "GetNote Transcribe Router"
   short_description: "Route GetNote URL import, private original, and local media workflows"
-  default_prompt: "Use $getnote-transcribe to route the request: public URLs to $getnote-url-import, existing note_id originals to $getnote-note-original, and local media files to $getnote-local-media."
+  default_prompt: "Use $getnote-transcribe to route the request: public URLs to $getnote-url-import, existing note_id originals to $getnote-note-original, and local media files to $getnote-local-media via the desktop PC audio upload -> ASR -> polish flow."

@@ -36,7 +36,7 @@ class GetNoteWorkflowTests(unittest.TestCase):
             "getnote-transcribe": ["getnote-url-import", "getnote-note-original", "getnote-local-media"],
             "getnote-url-import": ["--url", "--url-list", "OpenAPI"],
             "getnote-note-original": ["note_id", "/original", "desktop"],
-            "getnote-local-media": ["本地音视频自动导入", "--dry-run", "stream_on_local_audio"],
+            "getnote-local-media": ["本地音视频自动导入", "--dry-run", "/voicenotes/pc/v1/asr/file"],
         }
         for skill_name, needles in expected.items():
             skill_path = SKILLS_ROOT / skill_name / "SKILL.md"
@@ -304,27 +304,49 @@ class GetNoteWorkflowTests(unittest.TestCase):
         self.assertEqual(payload["type"], "mp3")
         self.assertEqual(payload["md5"], "SC2rEZSOT69RUTUvQZQ/xg==")
 
-    def test_local_media_upload_token_request_uses_private_endpoint(self):
+    def test_local_media_upload_token_request_uses_pc_signed_endpoint(self):
         response = Mock()
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
-        response.read.return_value = b'{"h":{"c":0},"c":{"upload_id":"up_1"}}'
+        response.read.return_value = b'{"h":{"c":0},"c":{"put_url":"https://oss.example.com/audio.mp3","put_callback":"cb","get_url":"https://cdn.example.com/audio.mp3","file_id":"file_1"}}'
 
-        with patch("urllib.request.urlopen", return_value=response) as urlopen:
-            result = local_media.request_media_upload_token(
+        with patch("urllib.request.urlopen", return_value=response) as urlopen, patch.object(
+            local_media, "generate_nonce", return_value="nonce-1"
+        ), patch.object(local_media, "current_timestamp_ms", return_value="1234567890000"), patch.object(
+            local_media, "detect_macos_version", return_value="26.5"
+        ):
+            result = local_media.request_pc_audio_upload_token(
                 "https://example.com",
                 token="secret-token",
-                payload={"duration_ms": 1234},
+                content_md5="SC2rEZSOT69RUTUvQZQ/xg==",
                 timeout=1,
             )
 
         request = urlopen.call_args.args[0]
         headers = {key.lower(): value for key, value in request.header_items()}
-        self.assertEqual(request.full_url, "https://example.com/voicenotes/web/notes/local_audio/token")
-        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(
+            request.full_url,
+            "https://example.com/voicenotes/pc/v1/audio/upload_audio_token?content_md5=SC2rEZSOT69RUTUvQZQ%2Fxg%3D%3D",
+        )
+        self.assertEqual(request.get_method(), "GET")
         self.assertEqual(headers["authorization"], "Bearer secret-token")
-        self.assertEqual(headers["content-type"], "application/json")
-        self.assertEqual(result["c"]["upload_id"], "up_1")
+        self.assertEqual(headers["x-pcapp-name"], "GetNotePCAPP")
+        self.assertEqual(headers["x-pcapp-version"], "1.4.0")
+        self.assertEqual(headers["x-pcapp-os"], "mac")
+        self.assertEqual(headers["x-pcapp-os-release"], "26.5")
+        self.assertEqual(headers["x-pcapp-timestamp"], "1234567890000")
+        self.assertEqual(headers["x-pcapp-nonce"], "nonce-1")
+        self.assertEqual(
+            headers["x-pcapp-signature"],
+            local_media.generate_pc_signature(
+                "GET",
+                "/voicenotes/pc/v1/audio/upload_audio_token?content_md5=SC2rEZSOT69RUTUvQZQ%2Fxg%3D%3D",
+                "1234567890000",
+                "nonce-1",
+                "",
+            ),
+        )
+        self.assertEqual(result["c"]["file_id"], "file_1")
 
     def test_local_media_put_to_oss_uses_required_headers(self):
         response = Mock()
@@ -349,22 +371,23 @@ class GetNoteWorkflowTests(unittest.TestCase):
         self.assertEqual(headers["content-type"], "audio/mpeg")
         self.assertEqual(headers["content-md5"], "LrHbuVJlU/qTT1jELCXkpg==")
 
-    def test_local_media_create_note_uses_stream_on_local_audio(self):
-        payload = local_media.build_local_audio_payload(
+    def test_local_media_create_note_uses_pc_polish_stream(self):
+        payload = local_media.build_pc_audio_note_payload(
             title="Demo",
             audio_url="https://oss.example.com/audio.mp3",
-            file_id="file_1",
             duration_ms=1234,
-            local_name="demo.mp3",
-            size_byte=10,
-            media_type="mp3",
+            asr_content="hello transcript",
+            action_time=1234567890000,
+            client_note_id="client_1",
         )
-        self.assertEqual(payload["note_type"], "local_audio")
-        self.assertEqual(payload["source"], "web")
-        self.assertEqual(payload["audio"]["file_id"], "file_1")
+        self.assertEqual(payload["note_type"], "audio")
+        self.assertEqual(payload["source"], "app")
+        self.assertEqual(payload["content"], "hello transcript")
+        self.assertEqual(payload["attachments"][0]["type"], "audio")
+        self.assertEqual(payload["attachments"][0]["duration"], 1234)
 
-        with patch.object(local_media, "stream_sse_json", return_value=[{"note_id": "1901"}]) as stream:
-            events = local_media.request_local_audio_note(
+        with patch.object(local_media, "stream_pc_sse_json", return_value=[{"note_id": "1901"}]) as stream:
+            events = local_media.request_pc_audio_note(
                 "https://example.com",
                 token="secret-token",
                 payload=payload,
@@ -374,13 +397,49 @@ class GetNoteWorkflowTests(unittest.TestCase):
 
         stream.assert_called_once_with(
             "https://example.com",
-            "/voicenotes/web/topics/notes/stream_on_local_audio",
+            "/voicenotes/pc/v1/notes/polish/stream",
             "secret-token",
             payload,
             1,
             raw_sse_path=None,
         )
         self.assertEqual(events, [{"note_id": "1901"}])
+
+    def test_local_media_reads_pc_asr_content(self):
+        payload = {"h": {"c": 0}, "c": {"content": "hello transcript"}}
+
+        self.assertEqual(local_media.extract_pc_asr_content(payload), "hello transcript")
+
+    def test_local_media_extracts_pc_final_note_from_sse_msg(self):
+        events = [
+            {"code": 200, "msg_type": 104, "data": {"msg": json.dumps({"content": "partial"})}},
+            {
+                "code": 200,
+                "msg_type": -2,
+                "data": {
+                    "msg": json.dumps(
+                        {
+                            "note_id": "1912212392936928360",
+                            "title": "Created",
+                            "content": "polished",
+                            "attachments": [
+                                {
+                                    "url": "https://cdn.example.com/audio.mp3?Expires=1&OSSAccessKeyId=secret&Signature=secret"
+                                }
+                            ],
+                        }
+                    )
+                },
+            },
+        ]
+
+        note = local_media.extract_pc_final_note(events)
+        redacted = local_media.redact_signed_media_urls(note)
+
+        self.assertEqual(note["note_id"], "1912212392936928360")
+        self.assertEqual(note["content"], "polished")
+        self.assertEqual(redacted["attachments"][0]["url"], "https://cdn.example.com/audio.mp3")
+        self.assertTrue(redacted["attachments"][0]["url_query_redacted"])
 
     def test_local_media_dry_run_does_not_write_remote_or_print_token(self):
         stdout = StringIO()
@@ -390,9 +449,9 @@ class GetNoteWorkflowTests(unittest.TestCase):
             media_path.write_bytes(b"audio-bytes")
 
             with patch.object(local_media, "load_tokens", return_value=["secret-token"]), patch.object(
-                local_media, "request_media_upload_token"
+                local_media, "request_pc_audio_upload_token"
             ) as upload_token, patch.object(local_media, "put_media_to_oss") as put_oss, patch.object(
-                local_media, "request_local_audio_note"
+                local_media, "request_pc_audio_note"
             ) as create_note, patch("sys.stdout", stdout), patch("sys.stderr", stderr):
                 code = local_media.main([str(media_path), "--dry-run"])
 

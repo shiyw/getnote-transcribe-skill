@@ -7,8 +7,8 @@ GetNote import/transcript skills. The repo keeps the old `$getnote-transcribe` e
 - `skills/getnote-transcribe/`: compatibility router.
 - `skills/getnote-url-import/`: public URL -> OpenAPI save -> summary/source export.
 - `skills/getnote-note-original/`: existing `note_id` -> desktop login-state `/original` transcript.
-- `skills/getnote-local-media/`: 本地音视频自动导入 -> OSS upload -> `local_audio` note -> `/original` transcript.
-- `skills/_shared/`: shared desktop token, Bearer header, `/original` parsing, and transcript Markdown helpers.
+- `skills/getnote-local-media/`: 本地音视频自动导入 -> PC signed upload -> OSS PUT -> PC ASR -> audio note polish stream -> transcript export.
+- `skills/_shared/`: shared desktop token, Bearer header, PC signed request helpers, `/original` parsing, and transcript Markdown helpers.
 
 The old script paths in `skills/getnote-transcribe/scripts/` remain as compatibility wrappers.
 
@@ -74,7 +74,8 @@ Local media import:
 python3 skills/getnote-local-media/scripts/getnote_local_media_workflow.py \
   ./audio.mp3 \
   --output transcript.md \
-  --raw-original-json original.json \
+  --raw-asr-json asr.json \
+  --raw-note-json note.json \
   --raw-sse-jsonl events.jsonl
 ```
 
@@ -83,10 +84,12 @@ python3 skills/getnote-local-media/scripts/getnote_local_media_workflow.py \
 - Do not create public share links unless the user explicitly asks for public sharing.
 - URL import uses OpenAPI only and must not read desktop tokens.
 - Existing `note_id` original export must not call OpenAPI URL save.
-- 本地音视频自动导入 is a script-backed workflow, not a product concept named "CLI upload".
+- 本地音视频自动导入 uses the current GetNote desktop PC audio path: `/voicenotes/pc/v1/audio/upload_audio_token`, `/voicenotes/pc/v1/asr/file`, and `/voicenotes/pc/v1/notes/polish/stream`.
 - `--dry-run` checks local file, transcode plan, and token availability only; it must not request upload tokens, PUT OSS, or create notes.
 - OpenAPI detail source text comes from `web_content`, `web_page.content`, or `audio.original`; `content` is the AI summary.
 - Private `/original` stores transcript data as JSON in `c.content.sentence_list`.
+- Newer PC audio notes may not return the older `/original` shape; local media import falls back to the PC ASR text and reports the `/original` error.
+- `--raw-note-json` writes the final note object with signed media URL query strings redacted.
 
 ## Verification
 

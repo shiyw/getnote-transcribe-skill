@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Import local audio/video into GetNote and export the private original transcript."""
+"""Import local audio/video into GetNote and export the PC audio ASR transcript."""
 
 from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import hashlib
 import json
 import mimetypes
@@ -14,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,10 +28,14 @@ sys.path.insert(0, str(SHARED_DIR))
 from getnote_common import (  # noqa: E402
     DEFAULT_STORAGE_DIR,
     DEFAULT_WEB_BASE_URL,
+    current_timestamp_ms,
+    detect_macos_version,
     fetch_original_with_tokens,
+    generate_nonce,
+    generate_pc_signature,
     load_desktop_tokens,
-    request_web_json,
-    stream_web_sse_json,
+    request_pc_json,
+    stream_pc_sse_json,
     transcript_markdown,
 )
 
@@ -51,8 +57,9 @@ SUPPORTED_EXTENSIONS = {
 }
 OUTPUT_MEDIA_TYPE = "mp3"
 OUTPUT_CONTENT_TYPE = "audio/mpeg"
-UPLOAD_TOKEN_PATH = "/voicenotes/web/notes/local_audio/token"
-CREATE_LOCAL_AUDIO_PATH = "/voicenotes/web/topics/notes/stream_on_local_audio"
+PC_AUDIO_UPLOAD_TOKEN_PATH = "/voicenotes/pc/v1/audio/upload_audio_token"
+PC_ASR_FILE_PATH = "/voicenotes/pc/v1/asr/file"
+PC_AUDIO_NOTE_STREAM_PATH = "/voicenotes/pc/v1/notes/polish/stream"
 
 
 @dataclass(frozen=True)
@@ -61,6 +68,7 @@ class UploadInstructions:
     callback: str
     audio_url: str
     file_id: str
+    content_type: str = OUTPUT_CONTENT_TYPE
 
 
 def content_md5_base64(data: bytes) -> str:
@@ -84,55 +92,54 @@ def build_upload_token_payload(
     }
 
 
-def build_local_audio_payload(
+def build_pc_audio_note_payload(
     *,
     title: str,
     audio_url: str,
-    file_id: str,
     duration_ms: int,
-    local_name: str,
-    size_byte: int,
-    media_type: str,
+    asr_content: str,
+    action_time: int | None = None,
+    client_note_id: str | None = None,
 ) -> dict[str, Any]:
-    audio = {
-        "url": audio_url,
-        "audio_url": audio_url,
-        "file_id": file_id,
-        "duration_ms": int(duration_ms),
-        "local_name": local_name,
-        "size_byte": int(size_byte),
-        "type": media_type,
-    }
     return {
-        "note_type": "local_audio",
-        "source": "web",
-        "entry_type": "local_audio",
-        "title": title,
-        "audio": audio,
-        "audio_url": audio_url,
-        "file_id": file_id,
-        "duration_ms": int(duration_ms),
-        "local_name": local_name,
-        "size_byte": int(size_byte),
-        "type": media_type,
+        "note_id": "0",
+        "content": asr_content,
+        "entry_type": "ai",
+        "note_type": "audio",
+        "source": "app",
+        "attachments": [
+            {
+                "action_time": action_time or int(current_timestamp_ms()),
+                "size": 0,
+                "type": "audio",
+                "title": title,
+                "url": audio_url,
+                "duration": int(duration_ms),
+            }
+        ],
+        "client_note_id": client_note_id or f"123{current_timestamp_ms()}_voice_note",
     }
 
 
-def request_media_upload_token(
+def request_pc_audio_upload_token(
     base_url: str,
     *,
     token: str,
-    payload: Mapping[str, Any],
+    content_md5: str,
     timeout: int,
 ) -> dict[str, Any]:
-    return request_web_json(
+    query = urllib.parse.urlencode({"content_md5": content_md5})
+    path = f"{PC_AUDIO_UPLOAD_TOKEN_PATH}?{query}"
+    return request_pc_json(
         base_url,
-        UPLOAD_TOKEN_PATH,
+        path,
         token=token,
-        method="POST",
-        body=payload,
+        method="GET",
         timeout=timeout,
         user_agent="getnote-local-media/1.0",
+        timestamp=current_timestamp_ms(),
+        nonce=generate_nonce(),
+        os_release=detect_macos_version(),
     )
 
 
@@ -166,27 +173,25 @@ def put_media_to_oss(
         raise RuntimeError(f"OSS upload failed: {exc}") from exc
 
 
-def stream_sse_json(
+def request_pc_asr_result(
     base_url: str,
-    path: str,
-    token: str,
-    payload: Mapping[str, Any],
-    timeout: int,
     *,
-    raw_sse_path: Path | None = None,
-) -> list[dict[str, Any]]:
-    return stream_web_sse_json(
+    token: str,
+    audio_url: str,
+    timeout: int,
+) -> dict[str, Any]:
+    return request_pc_json(
         base_url,
-        path,
         token=token,
-        body=payload,
+        path=PC_ASR_FILE_PATH,
+        method="POST",
+        body={"path": audio_url},
         timeout=timeout,
         user_agent="getnote-local-media/1.0",
-        raw_sse_path=raw_sse_path,
     )
 
 
-def request_local_audio_note(
+def request_pc_audio_note(
     base_url: str,
     *,
     token: str,
@@ -194,9 +199,9 @@ def request_local_audio_note(
     timeout: int,
     raw_sse_path: Path | None,
 ) -> list[dict[str, Any]]:
-    return stream_sse_json(
+    return stream_pc_sse_json(
         base_url,
-        CREATE_LOCAL_AUDIO_PATH,
+        PC_AUDIO_NOTE_STREAM_PATH,
         token,
         payload,
         timeout,
@@ -290,9 +295,10 @@ def transcode_to_mp3(input_path: Path, output_path: Path, timeout: int) -> None:
 
 def extract_upload_instructions(payload: Mapping[str, Any]) -> UploadInstructions:
     put_url = find_string_value(payload, ("put_sign_url", "put_url", "upload_url", "signed_url"))
-    callback = find_string_value(payload, ("callback", "x_oss_callback", "oss_callback", "callback_body"))
-    audio_url = find_string_value(payload, ("audio_url", "file_url", "object_url", "resource_url", "url"))
+    callback = find_string_value(payload, ("put_callback", "callback", "x_oss_callback", "oss_callback", "callback_body"))
+    audio_url = find_string_value(payload, ("get_url", "audio_url", "file_url", "object_url", "resource_url", "url"))
     file_id = find_string_value(payload, ("file_id", "fid", "id"))
+    content_type = find_string_value(payload, ("put_content_type", "content_type", "mime_type")) or OUTPUT_CONTENT_TYPE
 
     if not put_url:
         raise RuntimeError("GetNote upload-token response missing OSS upload URL.")
@@ -300,7 +306,13 @@ def extract_upload_instructions(payload: Mapping[str, Any]) -> UploadInstruction
         raise RuntimeError("GetNote upload-token response missing OSS callback.")
     if not audio_url:
         audio_url = put_url.split("?", 1)[0]
-    return UploadInstructions(put_url=put_url, callback=callback, audio_url=audio_url, file_id=file_id)
+    return UploadInstructions(
+        put_url=put_url,
+        callback=callback,
+        audio_url=audio_url,
+        file_id=file_id,
+        content_type=content_type,
+    )
 
 
 def find_string_value(value: Any, keys: tuple[str, ...]) -> str:
@@ -350,6 +362,67 @@ def find_number_value(value: Any, keys: tuple[str, ...]) -> int:
     return 0
 
 
+def extract_pc_asr_content(payload: Mapping[str, Any]) -> str:
+    content_root = payload.get("c")
+    if not isinstance(content_root, Mapping):
+        raise RuntimeError("GetNote PC ASR payload missing c object.")
+    content = content_root.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError("GetNote PC ASR payload missing c.content text.")
+    return content.strip()
+
+
+def extract_pc_final_note(events: list[dict[str, Any]]) -> dict[str, Any]:
+    for event in reversed(events):
+        if event.get("msg_type") != -2:
+            continue
+        data = event.get("data")
+        if not isinstance(data, Mapping):
+            continue
+        message = data.get("msg")
+        if not isinstance(message, str) or not message.strip():
+            continue
+        parsed = json.loads(message)
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def redact_signed_url(url: str) -> tuple[str, bool]:
+    parsed = urllib.parse.urlsplit(url)
+    if not parsed.query:
+        return url, False
+    redacted = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", parsed.fragment))
+    return redacted, True
+
+
+def redact_signed_media_urls(payload: Mapping[str, Any]) -> dict[str, Any]:
+    redacted = copy.deepcopy(dict(payload))
+    attachments = redacted.get("attachments")
+    if isinstance(attachments, list):
+        for item in attachments:
+            if not isinstance(item, dict):
+                continue
+            url = item.get("url")
+            if isinstance(url, str):
+                item["url"], was_redacted = redact_signed_url(url)
+                if was_redacted:
+                    item["url_query_redacted"] = True
+    return redacted
+
+
+def pc_asr_markdown(asr_content: str, *, note_id: str = "", original_error: str = "") -> str:
+    lines = [
+        "> [!info] GetNote PC audio ASR transcript",
+    ]
+    if note_id:
+        lines.append(f"> Note ID: {note_id}")
+    if original_error:
+        lines.append(f"> `/original` export unavailable: {original_error}")
+    lines.extend(["", asr_content.strip(), ""])
+    return "\n".join(lines)
+
+
 def run_dry_run(args: argparse.Namespace, media_path: Path, tokens: list[str]) -> dict[str, Any]:
     return {
         "success": True,
@@ -362,6 +435,7 @@ def run_dry_run(args: argparse.Namespace, media_path: Path, tokens: list[str]) -
         "remote_writes": {
             "upload_token": False,
             "oss_put": False,
+            "asr": False,
             "create_note": False,
         },
     }
@@ -390,10 +464,10 @@ def run_import(args: argparse.Namespace) -> dict[str, Any]:
             local_name=output_name,
         )
         token = tokens[0]
-        upload_response = request_media_upload_token(
+        upload_response = request_pc_audio_upload_token(
             args.base_url,
             token=token,
-            payload=upload_payload,
+            content_md5=upload_payload["md5"],
             timeout=args.timeout,
         )
         instructions = extract_upload_instructions(upload_response)
@@ -401,21 +475,25 @@ def run_import(args: argparse.Namespace) -> dict[str, Any]:
         put_media_to_oss(
             instructions.put_url,
             data=media_bytes,
-            content_type=mimetypes.guess_type(converted_path.name)[0] or OUTPUT_CONTENT_TYPE,
+            content_type=instructions.content_type or mimetypes.guess_type(converted_path.name)[0] or OUTPUT_CONTENT_TYPE,
             content_md5=upload_payload["md5"],
             callback=instructions.callback,
             timeout=args.timeout,
         )
-        note_payload = build_local_audio_payload(
+        asr_payload = request_pc_asr_result(
+            args.base_url,
+            token=token,
+            audio_url=instructions.audio_url,
+            timeout=args.timeout,
+        )
+        asr_content = extract_pc_asr_content(asr_payload)
+        note_payload = build_pc_audio_note_payload(
             title=title,
             audio_url=instructions.audio_url,
-            file_id=instructions.file_id,
             duration_ms=duration_ms,
-            local_name=output_name,
-            size_byte=upload_payload["size_byte"],
-            media_type=OUTPUT_MEDIA_TYPE,
+            asr_content=asr_content,
         )
-        events = request_local_audio_note(
+        events = request_pc_audio_note(
             args.base_url,
             token=token,
             payload=note_payload,
@@ -423,13 +501,33 @@ def run_import(args: argparse.Namespace) -> dict[str, Any]:
             raw_sse_path=raw_sse_path,
         )
 
-    note_id = extract_note_id_from_events(events)
+    final_note = extract_pc_final_note(events)
+    note_id = str(final_note.get("note_id") or final_note.get("id") or extract_note_id_from_events(events))
     if not note_id:
-        raise RuntimeError("GetNote local_audio create response did not include note_id.")
+        raise RuntimeError("GetNote PC audio create response did not include note_id.")
 
-    original_payload = fetch_original_with_tokens(args.base_url, note_id, tokens, args.timeout)
-    markdown = transcript_markdown(original_payload)
-    if args.raw_original_json:
+    original_payload: dict[str, Any] | None = None
+    original_error = ""
+    try:
+        original_payload = fetch_original_with_tokens(args.base_url, note_id, tokens, args.timeout)
+        markdown = transcript_markdown(original_payload)
+        transcript_source = "original"
+    except RuntimeError as exc:
+        original_error = str(exc).splitlines()[0]
+        markdown = pc_asr_markdown(asr_content, note_id=note_id, original_error=original_error)
+        transcript_source = "pc_asr"
+
+    if args.raw_asr_json:
+        Path(args.raw_asr_json).expanduser().write_text(
+            json.dumps(asr_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    if args.raw_note_json and final_note:
+        Path(args.raw_note_json).expanduser().write_text(
+            json.dumps(redact_signed_media_urls(final_note), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    if args.raw_original_json and original_payload:
         Path(args.raw_original_json).expanduser().write_text(
             json.dumps(original_payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -442,20 +540,25 @@ def run_import(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "success": True,
         "note_id": note_id,
+        "transcript_source": transcript_source,
         "output": args.output or "",
+        "raw_asr_json": args.raw_asr_json or "",
+        "raw_note_json": args.raw_note_json or "",
         "raw_original_json": args.raw_original_json or "",
         "raw_sse_jsonl": args.raw_sse_jsonl or "",
         "events": len(events),
+        "original_error": original_error,
     }
-
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("media_path", help="Local audio/video file to import into GetNote.")
     parser.add_argument("--output", help="Write Markdown transcript to this path. Defaults to stdout after import.")
+    parser.add_argument("--raw-asr-json", help="Write the raw PC ASR JSON payload to this path.")
+    parser.add_argument("--raw-note-json", help="Write the final GetNote note object with signed media URLs redacted.")
     parser.add_argument("--raw-original-json", help="Write the raw /original JSON payload to this path.")
-    parser.add_argument("--raw-sse-jsonl", help="Write parsed local_audio SSE events as JSONL.")
+    parser.add_argument("--raw-sse-jsonl", help="Write parsed PC audio-note SSE events as JSONL.")
     parser.add_argument("--title", default="", help="Optional GetNote note title.")
     parser.add_argument("--base-url", default=DEFAULT_WEB_BASE_URL)
     parser.add_argument("--desktop-storage-dir", default=str(DEFAULT_STORAGE_DIR))
