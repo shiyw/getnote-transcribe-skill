@@ -199,14 +199,17 @@ def request_pc_audio_note(
     timeout: int,
     raw_sse_path: Path | None,
 ) -> list[dict[str, Any]]:
-    return stream_pc_sse_json(
+    events = stream_pc_sse_json(
         base_url,
         PC_AUDIO_NOTE_STREAM_PATH,
         token,
         payload,
         timeout,
-        raw_sse_path=raw_sse_path,
+        raw_sse_path=None,
     )
+    if raw_sse_path:
+        write_redacted_pc_sse_events(events, raw_sse_path)
+    return events
 
 
 def load_tokens(args: argparse.Namespace, environ: Mapping[str, str]) -> list[str]:
@@ -315,6 +318,29 @@ def extract_upload_instructions(payload: Mapping[str, Any]) -> UploadInstruction
     )
 
 
+def request_upload_instructions_with_tokens(
+    base_url: str,
+    *,
+    tokens: list[str],
+    content_md5: str,
+    timeout: int,
+) -> tuple[str, dict[str, Any], UploadInstructions]:
+    errors: list[str] = []
+    for token in tokens:
+        try:
+            response = request_pc_audio_upload_token(
+                base_url,
+                token=token,
+                content_md5=content_md5,
+                timeout=timeout,
+            )
+            return token, response, extract_upload_instructions(response)
+        except RuntimeError as exc:
+            errors.append(str(exc).splitlines()[0])
+    last_error = errors[-1] if errors else "no tokens supplied"
+    raise RuntimeError("No candidate GetNote desktop token could request PC audio upload token. Last error: " + last_error)
+
+
 def find_string_value(value: Any, keys: tuple[str, ...]) -> str:
     if isinstance(value, Mapping):
         for key in keys:
@@ -411,6 +437,32 @@ def redact_signed_media_urls(payload: Mapping[str, Any]) -> dict[str, Any]:
     return redacted
 
 
+def redact_pc_sse_event(event: Mapping[str, Any]) -> dict[str, Any]:
+    redacted = copy.deepcopy(dict(event))
+    data = redacted.get("data")
+    if not isinstance(data, dict):
+        return redacted
+    message = data.get("msg")
+    if not isinstance(message, str) or not message.strip():
+        return redacted
+    try:
+        parsed = json.loads(message)
+    except json.JSONDecodeError:
+        return redacted
+    if isinstance(parsed, Mapping):
+        data["msg"] = json.dumps(redact_signed_media_urls(parsed), ensure_ascii=False, separators=(",", ":"))
+    return redacted
+
+
+def write_redacted_pc_sse_events(events: list[dict[str, Any]], raw_sse_path: Path) -> None:
+    expanded = raw_sse_path.expanduser()
+    expanded.parent.mkdir(parents=True, exist_ok=True)
+    expanded.write_text(
+        "".join(json.dumps(redact_pc_sse_event(event), ensure_ascii=False) + "\n" for event in events),
+        encoding="utf-8",
+    )
+
+
 def pc_asr_markdown(asr_content: str, *, note_id: str = "", original_error: str = "") -> str:
     lines = [
         "> [!info] GetNote PC audio ASR transcript",
@@ -463,14 +515,12 @@ def run_import(args: argparse.Namespace) -> dict[str, Any]:
             media_type=OUTPUT_MEDIA_TYPE,
             local_name=output_name,
         )
-        token = tokens[0]
-        upload_response = request_pc_audio_upload_token(
+        token, upload_response, instructions = request_upload_instructions_with_tokens(
             args.base_url,
-            token=token,
+            tokens=tokens,
             content_md5=upload_payload["md5"],
             timeout=args.timeout,
         )
-        instructions = extract_upload_instructions(upload_response)
         media_bytes = converted_path.read_bytes()
         put_media_to_oss(
             instructions.put_url,

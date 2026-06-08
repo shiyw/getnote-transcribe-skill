@@ -1,5 +1,6 @@
 import json
 import importlib.util
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -13,6 +14,8 @@ SKILLS_ROOT = REPO_ROOT / "skills"
 URL_SCRIPT_PATH = SKILLS_ROOT / "getnote-url-import" / "scripts" / "getnote_url_workflow.py"
 DESKTOP_SCRIPT_PATH = SKILLS_ROOT / "getnote-note-original" / "scripts" / "getnote_desktop_original.py"
 LOCAL_MEDIA_SCRIPT_PATH = SKILLS_ROOT / "getnote-local-media" / "scripts" / "getnote_local_media_workflow.py"
+TRANSCRIBE_URL_WRAPPER_PATH = SKILLS_ROOT / "getnote-transcribe" / "scripts" / "getnote_url_workflow.py"
+TRANSCRIBE_DESKTOP_WRAPPER_PATH = SKILLS_ROOT / "getnote-transcribe" / "scripts" / "getnote_desktop_original.py"
 
 
 def load_module(name: str, path: Path):
@@ -338,15 +341,37 @@ class GetNoteWorkflowTests(unittest.TestCase):
         self.assertEqual(headers["x-pcapp-nonce"], "nonce-1")
         self.assertEqual(
             headers["x-pcapp-signature"],
-            local_media.generate_pc_signature(
-                "GET",
-                "/voicenotes/pc/v1/audio/upload_audio_token?content_md5=SC2rEZSOT69RUTUvQZQ%2Fxg%3D%3D",
-                "1234567890000",
-                "nonce-1",
-                "",
-            ),
+            "a0ff08d4f1e1e274bd7ae11f60ea9d11e32647016c02245e6e1351ce17f11f9c",
         )
         self.assertEqual(result["c"]["file_id"], "file_1")
+
+    def test_local_media_upload_token_selection_tries_candidate_tokens(self):
+        upload_payload = {
+            "h": {"c": 0},
+            "c": {
+                "put_url": "https://oss.example.com/audio.mp3",
+                "put_callback": "cb",
+                "get_url": "https://cdn.example.com/audio.mp3",
+                "file_id": "file_1",
+            },
+        }
+
+        with patch.object(
+            local_media,
+            "request_pc_audio_upload_token",
+            side_effect=[RuntimeError("expired token"), upload_payload],
+        ) as upload_token:
+            selected_token, response, instructions = local_media.request_upload_instructions_with_tokens(
+                "https://example.com",
+                tokens=["expired-token", "fresh-token"],
+                content_md5="SC2rEZSOT69RUTUvQZQ/xg==",
+                timeout=1,
+            )
+
+        self.assertEqual(selected_token, "fresh-token")
+        self.assertEqual(response, upload_payload)
+        self.assertEqual(instructions.audio_url, "https://cdn.example.com/audio.mp3")
+        self.assertEqual([call.kwargs["token"] for call in upload_token.call_args_list], ["expired-token", "fresh-token"])
 
     def test_local_media_put_to_oss_uses_required_headers(self):
         response = Mock()
@@ -404,6 +429,55 @@ class GetNoteWorkflowTests(unittest.TestCase):
             raw_sse_path=None,
         )
         self.assertEqual(events, [{"note_id": "1901"}])
+
+    def test_local_media_raw_sse_jsonl_redacts_signed_media_urls(self):
+        events = [
+            {
+                "code": 200,
+                "msg_type": -2,
+                "data": {
+                    "msg": json.dumps(
+                        {
+                            "note_id": "1912212392936928360",
+                            "attachments": [
+                                {
+                                    "url": "https://cdn.example.com/audio.mp3?Expires=1&OSSAccessKeyId=secret&Signature=secret"
+                                }
+                            ],
+                        }
+                    )
+                },
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            raw_sse_path = Path(tmp) / "events.jsonl"
+            with patch.object(local_media, "stream_pc_sse_json", return_value=events) as stream:
+                result = local_media.request_pc_audio_note(
+                    "https://example.com",
+                    token="secret-token",
+                    payload={"content": "hello"},
+                    timeout=1,
+                    raw_sse_path=raw_sse_path,
+                )
+
+            stream.assert_called_once_with(
+                "https://example.com",
+                "/voicenotes/pc/v1/notes/polish/stream",
+                "secret-token",
+                {"content": "hello"},
+                1,
+                raw_sse_path=None,
+            )
+            self.assertEqual(result, events)
+            raw_text = raw_sse_path.read_text(encoding="utf-8")
+
+        self.assertNotIn("OSSAccessKeyId", raw_text)
+        self.assertNotIn("Signature=secret", raw_text)
+        raw_event = json.loads(raw_text)
+        note = json.loads(raw_event["data"]["msg"])
+        self.assertEqual(note["attachments"][0]["url"], "https://cdn.example.com/audio.mp3")
+        self.assertTrue(note["attachments"][0]["url_query_redacted"])
 
     def test_local_media_reads_pc_asr_content(self):
         payload = {"h": {"c": 0}, "c": {"content": "hello transcript"}}
@@ -483,6 +557,23 @@ class GetNoteWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(request.headers["Authorization"], "Bearer token-value")
         self.assertEqual(payload["h"]["c"], 0)
+
+    def test_getnote_transcribe_compat_wrappers_show_help(self):
+        for script_path, expected in [
+            (TRANSCRIBE_URL_WRAPPER_PATH, "--url"),
+            (TRANSCRIBE_DESKTOP_WRAPPER_PATH, "note_id"),
+        ]:
+            with self.subTest(script_path=script_path.name):
+                result = subprocess.run(
+                    [sys.executable, str(script_path), "--help"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(expected, result.stdout)
 
 
 if __name__ == "__main__":

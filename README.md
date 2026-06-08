@@ -75,8 +75,7 @@ python3 skills/getnote-local-media/scripts/getnote_local_media_workflow.py \
   ./audio.mp3 \
   --output transcript.md \
   --raw-asr-json asr.json \
-  --raw-note-json note.json \
-  --raw-sse-jsonl events.jsonl
+  --raw-note-json note.json
 ```
 
 ## Boundaries
@@ -90,6 +89,7 @@ python3 skills/getnote-local-media/scripts/getnote_local_media_workflow.py \
 - Private `/original` stores transcript data as JSON in `c.content.sentence_list`.
 - Newer PC audio notes may not return the older `/original` shape; local media import falls back to the PC ASR text and reports the `/original` error.
 - `--raw-note-json` writes the final note object with signed media URL query strings redacted.
+- `--raw-sse-jsonl` is optional debug output; signed media URL query strings inside final note events are redacted before writing.
 
 ## Verification
 

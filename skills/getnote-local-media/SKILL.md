@@ -11,7 +11,7 @@ Run from this skill directory:
 
 ```bash
 python3 scripts/getnote_local_media_workflow.py ./audio.mp3 --dry-run
-python3 scripts/getnote_local_media_workflow.py ./audio.mp3 --output transcript.md --raw-asr-json asr.json --raw-note-json note.json --raw-sse-jsonl events.jsonl
+python3 scripts/getnote_local_media_workflow.py ./audio.mp3 --output transcript.md --raw-asr-json asr.json --raw-note-json note.json
 ```
 
 Supported interface: positional `media_path`, `--output`, `--raw-asr-json`, `--raw-note-json`, `--raw-original-json`, `--raw-sse-jsonl`, `--title`, `--timeout`, `--dry-run`.
@@ -23,4 +23,5 @@ Boundaries:
 - Do not call OpenAPI URL import for local files.
 - Do not create public share links.
 - `--raw-note-json` redacts signed media URL query strings before writing.
+- `--raw-sse-jsonl` is optional debug output; final note events redact signed media URL query strings before writing.
 - If `/original` fails, report the error and keep the PC ASR transcript as the output instead of treating the import as failed.
