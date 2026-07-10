@@ -56,7 +56,7 @@ SUPPORTED_EXTENSIONS = {
     ".webm",
 }
 OUTPUT_MEDIA_TYPE = "mp3"
-OUTPUT_CONTENT_TYPE = "audio/mpeg"
+OUTPUT_CONTENT_TYPE = "audio/mp3"
 PC_AUDIO_UPLOAD_TOKEN_PATH = "/voicenotes/pc/v1/audio/upload_audio_token"
 PC_ASR_FILE_PATH = "/voicenotes/pc/v1/asr/file"
 PC_AUDIO_NOTE_STREAM_PATH = "/voicenotes/pc/v1/notes/polish/stream"
@@ -152,24 +152,48 @@ def put_media_to_oss(
     callback: str,
     timeout: int,
 ) -> None:
-    request = urllib.request.Request(
-        upload_url,
-        data=data,
-        method="PUT",
-        headers={
-            "Content-Type": content_type,
-            "Content-MD5": content_md5,
-            "X-Oss-Callback": callback,
-            "User-Agent": "getnote-local-media/1.0",
-        },
-    )
+    curl = shutil.which("curl")
+    if not curl:
+        raise RuntimeError("Missing required executable: curl")
+    
+    command = [
+        curl,
+        "-X", "PUT",
+        "-H", f"Content-Type: {content_type}",
+        "-H", f"X-Oss-Callback: {callback}",
+        "-H", "Expect:",
+        "-H", "User-Agent: getnote-local-media/1.0",
+        "--data-binary", "@-",
+        "--max-time", str(timeout),
+        "-s", "-S",
+        "-i",
+        upload_url
+    ]
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            response.read()
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"OSS upload failed: HTTP {exc.code}: {body}") from exc
-    except OSError as exc:
+        result = subprocess.run(
+            command,
+            input=data,
+            capture_output=True,
+            check=False
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"curl failed: {result.stderr.decode('utf-8', errors='replace')}")
+        
+        output = result.stdout.decode("utf-8", errors="replace")
+        status_code = 0
+        for line in output.splitlines():
+            if line.startswith("HTTP/"):
+                parts = line.split(" ", 2)
+                if len(parts) >= 2:
+                    try:
+                        code = int(parts[1])
+                        if code != 100:
+                            status_code = code
+                    except ValueError:
+                        pass
+        if status_code < 200 or status_code >= 300:
+            raise RuntimeError(f"OSS upload HTTP {status_code}: {output}")
+    except Exception as exc:
         raise RuntimeError(f"OSS upload failed: {exc}") from exc
 
 
@@ -408,7 +432,10 @@ def extract_pc_final_note(events: list[dict[str, Any]]) -> dict[str, Any]:
         message = data.get("msg")
         if not isinstance(message, str) or not message.strip():
             continue
-        parsed = json.loads(message)
+        try:
+            parsed = json.loads(message)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"JSON decode failed in extract_pc_final_note: {exc}. Message: {message}") from exc
         if isinstance(parsed, dict):
             return parsed
     return {}

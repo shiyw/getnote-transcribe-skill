@@ -182,13 +182,18 @@ def request_pc_json(
             os_release=os_release,
         ),
     )
+    raw_response_bytes = b""
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+            raw_response_bytes = response.read()
+            payload = json.loads(raw_response_bytes.decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body_text = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"GetNote PC API failed: HTTP {exc.code}: {body_text}") from exc
-    except (OSError, json.JSONDecodeError) as exc:
+    except json.JSONDecodeError as exc:
+        body_text = raw_response_bytes.decode("utf-8", errors="replace")
+        raise RuntimeError(f"GetNote PC API JSON decode failed: {exc}. Response text: {body_text}") from exc
+    except OSError as exc:
         raise RuntimeError(f"GetNote PC API failed: {exc}") from exc
 
     if not isinstance(payload, dict):
@@ -387,7 +392,10 @@ def parse_original_content(payload: Mapping[str, Any]) -> dict[str, Any]:
     content = content_root.get("content")
     if not isinstance(content, str) or not content.strip():
         raise RuntimeError("GetNote original payload missing c.content JSON string.")
-    parsed = json.loads(content)
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"JSON decode failed in parse_original_content: {exc}. Content: {content}") from exc
     if not isinstance(parsed, dict):
         raise RuntimeError(f"GetNote original c.content returned non-object JSON: {type(parsed).__name__}")
     return parsed
