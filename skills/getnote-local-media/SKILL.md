@@ -11,9 +11,7 @@ This flow converts local media to MP3, requests a signed PC upload token, PUTs t
 
 ## Dependencies
 
-- Script imports `getnote_common` from sibling `_shared/` (`skills/_shared/getnote_common.py`).
-- If this workspace only installed scene skills without `_shared`, set  
-  `PYTHONPATH` to a tree that contains `getnote_common.py` (for example the full getnote-transcribe-skill checkout), or symlink/copy `_shared` next to the scene skills.
+- Shared helpers are **vendored** at `scripts/getnote_common.py` (same directory as the workflow). Skill installers only copy this skill folder, so do not depend on a monorepo `skills/_shared/` sibling.
 - Prefer the workflow script that uploads with **curl** and `Content-Type: audio/mp3`. A urllib path that sends `audio/mpeg` will fail OSS with `SignatureDoesNotMatch`.
 
 ## Run
@@ -21,6 +19,9 @@ This flow converts local media to MP3, requests a signed PC upload token, PUTs t
 Run from this skill directory (or pass absolute script path):
 
 ```bash
+# Optional: force-refresh access JWT when you already know LoginRequired will hit
+python3 scripts/getnote_refresh_desktop_token.py --force --json
+
 python3 scripts/getnote_local_media_workflow.py ./audio.mp3 --dry-run
 python3 scripts/getnote_local_media_workflow.py ./audio.mp3 \
   --timeout 14400 \
@@ -30,7 +31,10 @@ python3 scripts/getnote_local_media_workflow.py ./audio.mp3 \
   --raw-note-json note.json
 ```
 
-Supported interface: positional `media_path`, `--output`, `--raw-asr-json`, `--raw-note-json`, `--raw-original-json`, `--raw-sse-jsonl`, `--title`, `--timeout`, `--dry-run`.
+Supported interface:
+
+- Workflow: positional `media_path`, `--output`, `--raw-asr-json`, `--raw-note-json`, `--raw-original-json`, `--raw-sse-jsonl`, `--title`, `--timeout`, `--dry-run`
+- Refresh helper: `--force`, `--export-env`, `--export-refresh`, `--json`, `--print-token` (off by default), `--desktop-storage-dir`
 
 ## Desktop auth (PC audio path)
 
@@ -42,26 +46,66 @@ This path uses **desktop PC JWT**, not the OpenAPI `getnote auth` API key.
 | Token storage | `~/Library/Application Support/iget-biji-desktop/Local Storage/leveldb` |
 | Access token | LocalStorage key `token` (JWT). Often ~30 minutes TTL (`exp - iat`) |
 | Refresh token | LocalStorage key `refresh_token` (opaque). Longer TTL via `refresh_token_expire_at` |
-| Override | `GETNOTE_WEB_TOKEN=<jwt>` skips desktop storage for that process |
+| Override | `GETNOTE_WEB_TOKEN=<jwt>` if set **and still fresh** |
+| Auto-refresh | Workflow calls `ensure_desktop_access_tokens()`: env → fresh desktop JWT → refresh API |
 
 ### When you see `HTTP 403` / `LoginRequired`
 
-1. Confirm desktop app is installed and previously logged in.
-2. Opening 得到大脑 alone may **not** rewrite a fresh access token if the old JWT is merely expired.
-3. Refresh via API (preferred for agents), then export `GETNOTE_WEB_TOKEN`:
+1. Confirm desktop app is installed and was logged in at least once (so `refresh_token` exists).
+2. Opening 得到大脑 alone may **not** rewrite a fresh access JWT if the old one is merely expired.
+3. **Preferred for agents: run the refresh helper** (uses plyvel + refresh API). Do **not** invent tokens.
 
 ```bash
-# refresh_token is the latin1 string stored under LocalStorage key refresh_token
-# (Chromium value has a leading 0x01 type byte; strip it. Do not invent the token.)
+# dependency (once): python3 -m pip install plyvel-ci
+# Prefer plyvel-ci on macOS universal2; plain plyvel needs system leveldb headers.
+
+python3 scripts/getnote_refresh_desktop_token.py --force --json \
+  --export-env /tmp/getnote_web_token.env
+
+# then either rely on auto-refresh inside the workflow, or:
+set -a && source /tmp/getnote_web_token.env && set +a
+python3 scripts/getnote_local_media_workflow.py ./audio.mp3 --output transcript.md ...
+```
+
+Status output looks like `ok refreshed=true left_min=29.8` or JSON with `success` / `exp` / `left_min` only — **never print full tokens** unless you intentionally pass `--print-token`.
+
+### How refresh works (do not shortcut)
+
+| Step | Detail |
+|------|--------|
+| 1. Read LevelDB | Copy `Local Storage/leveldb` to a temp dir, drop `LOCK`, open with **plyvel** |
+| 2. Key shape | Chromium key like `_file://\x00\x01refresh_token` → DOM key `refresh_token` |
+| 3. Value shape | Leading `0x01` type byte, then UTF-8 string. Strip the first byte |
+| 4. TTL check | Optional `refresh_token_expire_at` (unix seconds). If past → user must re-login |
+| 5. API | `POST https://notes-api.biji.com/account/v2/web/user/auth/refresh` |
+| 6. Headers | `Content-Type: application/json`, `User-Agent: iget-biji-desktop/2.1.0 GetNotePCAPP/2.1.0` |
+| 7. Body | `{"refresh_token":"<opaque from step 3>"}` |
+| 8. Success | `h.c == 0`; new access JWT at **`c.token.token`** |
+| 9. Rotate | Response may include a new `refresh_token`; prefer it for the next refresh |
+| 10. Use | Export `GETNOTE_WEB_TOKEN=<jwt>` or let `ensure_desktop_access_tokens()` return it |
+
+Shared implementation lives in `scripts/getnote_common.py` (vendored; monorepo source of truth is `skills/_shared/getnote_common.py`):
+
+- `load_desktop_localstorage_items` / `load_desktop_refresh_token`
+- `refresh_desktop_access_token`
+- `ensure_desktop_access_tokens` (used by local-media + note-original workflows)
+
+Manual curl equivalent (only after you already have the **correct** refresh_token string from plyvel — not from regex over raw `.ldb` bytes):
+
+```bash
 curl -sS -X POST 'https://notes-api.biji.com/account/v2/web/user/auth/refresh' \
   -H 'Content-Type: application/json' \
   -H 'User-Agent: iget-biji-desktop/2.1.0 GetNotePCAPP/2.1.0' \
-  -d '{"refresh_token":"<from leveldb refresh_token>"}'
+  -d '{"refresh_token":"<from plyvel LocalStorage refresh_token>"}'
 # Response: c.token.token is the new JWT → GETNOTE_WEB_TOKEN
 ```
 
-4. If refresh returns `20124` / 刷新Token已过期, user must re-login in 得到大脑.
-5. For **multi-file** batches longer than ~20–30 minutes, re-check JWT `exp` (or refresh) **between** files; mid-batch `LoginRequired` is expected after long polish streams.
+### Critical pitfalls
+
+- **Do not regex-scrape raw `.ldb` / `.log` files** for `refresh_token`. LevelDB block compression corrupts runs of identical characters (e.g. a prefix of many `A`s becomes binary garbage). Tokens reconstructed that way often get `20124 刷新Token已过期` even when the real refresh_token is still valid for days.
+- `load_desktop_tokens()` (JWT scrape from file bytes) is fine for the short-lived **access** JWT already written as text; it is **not** a substitute for reading `refresh_token` via plyvel.
+- If refresh returns `20124` / `刷新Token已过期` **after** a correct plyvel read, the refresh_token is truly dead → user must re-login in 得到大脑.
+- Access JWT ~30m TTL. For **multi-file** batches longer than ~20–30 minutes, re-check `exp` (or run the refresh helper) **between** files; mid-batch `LoginRequired` during long polish streams is expected if the process held one JWT for too long.
 
 ## Runtime expectations (do not misread as hang)
 

@@ -11,16 +11,19 @@ from pathlib import Path
 from typing import Mapping
 
 
-SHARED_DIR = Path(__file__).resolve().parents[2] / "_shared"
-sys.path.insert(0, str(SHARED_DIR))
+# Prefer vendored module next to this script (skill-manager installs one skill dir
+# at a time; monorepo skills/_shared is not part of the package).
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
 
 from getnote_common import (  # noqa: E402
     DEFAULT_STORAGE_DIR,
     DEFAULT_WEB_BASE_URL,
+    ensure_desktop_access_tokens,
     extract_jwts_from_bytes,
     fetch_original_with_tokens,
     jwt_exp,
-    load_desktop_tokens,
     ms_to_timestamp,
     parse_original_content,
     request_original_note,
@@ -31,10 +34,12 @@ from getnote_common import (  # noqa: E402
 
 
 def load_tokens(args: argparse.Namespace, environ: Mapping[str, str]) -> list[str]:
-    env_token = environ.get("GETNOTE_WEB_TOKEN", "").strip()
-    if env_token:
-        return [env_token]
-    return load_desktop_tokens(Path(args.desktop_storage_dir))
+    """Load a usable PC access JWT; auto-refresh via LocalStorage refresh_token when expired."""
+    return ensure_desktop_access_tokens(
+        Path(args.desktop_storage_dir),
+        environ=environ,
+        allow_refresh=True,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

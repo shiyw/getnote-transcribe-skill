@@ -8,7 +8,7 @@ GetNote import/transcript skills. The repo keeps the old `$getnote-transcribe` e
 - `skills/getnote-url-import/`: public URL -> OpenAPI save -> summary/source export.
 - `skills/getnote-note-original/`: existing `note_id` -> desktop login-state `/original` transcript.
 - `skills/getnote-local-media/`: 本地音视频自动导入 -> PC signed upload -> OSS PUT -> PC ASR -> audio note polish stream -> transcript export.
-- `skills/_shared/`: shared desktop token, Bearer header, PC signed request helpers, `/original` parsing, and transcript Markdown helpers.
+- `skills/_shared/`: monorepo **source of truth** for shared helpers (desktop token, Bearer header, PC signed requests, `/original` parsing, transcript Markdown). Scene skills that need it **vendor a copy** under `scripts/getnote_common.py` so skill-manager / single-skill installs work without `_shared`.
 
 The old script paths in `skills/getnote-transcribe/scripts/` remain as compatibility wrappers.
 
@@ -27,7 +27,12 @@ Private original and local media flows use the GetNote desktop login state from:
 ~/Library/Application Support/iget-biji-desktop/Local Storage/leveldb
 ```
 
-or `GETNOTE_WEB_TOKEN` if explicitly provided. Never print tokens.
+or `GETNOTE_WEB_TOKEN` if explicitly provided. Access JWT is ~30 minutes; when expired, skills refresh via LocalStorage `refresh_token` + `POST /account/v2/web/user/auth/refresh` (plyvel read — do not regex-scrape raw `.ldb`). Dependency: `python3 -m pip install plyvel-ci`. Never print tokens.
+
+```bash
+python3 skills/getnote-local-media/scripts/getnote_refresh_desktop_token.py --force --json \
+  --export-env /tmp/getnote_web_token.env
+```
 
 ## Usage
 

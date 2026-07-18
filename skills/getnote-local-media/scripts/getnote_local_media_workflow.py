@@ -22,18 +22,21 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-SHARED_DIR = Path(__file__).resolve().parents[2] / "_shared"
-sys.path.insert(0, str(SHARED_DIR))
+# Prefer vendored module next to this script (skill-manager installs one skill dir
+# at a time; monorepo skills/_shared is not part of the package).
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
 
 from getnote_common import (  # noqa: E402
     DEFAULT_STORAGE_DIR,
     DEFAULT_WEB_BASE_URL,
     current_timestamp_ms,
     detect_macos_version,
+    ensure_desktop_access_tokens,
     fetch_original_with_tokens,
     generate_nonce,
     generate_pc_signature,
-    load_desktop_tokens,
     request_pc_json,
     stream_pc_sse_json,
     transcript_markdown,
@@ -237,10 +240,12 @@ def request_pc_audio_note(
 
 
 def load_tokens(args: argparse.Namespace, environ: Mapping[str, str]) -> list[str]:
-    env_token = environ.get("GETNOTE_WEB_TOKEN", "").strip()
-    if env_token:
-        return [env_token]
-    return load_desktop_tokens(Path(args.desktop_storage_dir))
+    """Load a usable PC access JWT; auto-refresh via LocalStorage refresh_token when expired."""
+    return ensure_desktop_access_tokens(
+        Path(args.desktop_storage_dir),
+        environ=environ,
+        allow_refresh=True,
+    )
 
 
 def validate_media_path(media_path: Path) -> Path:

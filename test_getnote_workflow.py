@@ -52,6 +52,39 @@ class GetNoteWorkflowTests(unittest.TestCase):
         self.assertIn("route", router_agent.lower())
         self.assertNotIn("save this URL into GetNote", router_agent)
 
+    def test_getnote_common_is_vendored_into_scene_skills(self):
+        """skill-manager installs one skill directory at a time; do not rely on skills/_shared."""
+        shared = (SKILLS_ROOT / "_shared" / "getnote_common.py").read_bytes()
+        vendored_paths = [
+            SKILLS_ROOT / "getnote-local-media" / "scripts" / "getnote_common.py",
+            SKILLS_ROOT / "getnote-note-original" / "scripts" / "getnote_common.py",
+        ]
+        for path in vendored_paths:
+            self.assertTrue(path.is_file(), f"missing vendored getnote_common: {path}")
+            self.assertEqual(
+                path.read_bytes(),
+                shared,
+                f"{path} is out of sync with skills/_shared/getnote_common.py; run: "
+                "cp skills/_shared/getnote_common.py <skill>/scripts/getnote_common.py",
+            )
+
+        # Standalone skill tree (as skill-manager would install) must import without monorepo _shared.
+        for skill_name, script_name in (
+            ("getnote-local-media", "getnote_local_media_workflow.py"),
+            ("getnote-local-media", "getnote_refresh_desktop_token.py"),
+            ("getnote-note-original", "getnote_desktop_original.py"),
+        ):
+            with tempfile.TemporaryDirectory() as tmp:
+                skill_src = SKILLS_ROOT / skill_name
+                skill_dst = Path(tmp) / skill_name
+                # copytree would pull __pycache__; copy only SKILL + scripts needed for import
+                (skill_dst / "scripts").mkdir(parents=True)
+                for name in (script_name, "getnote_common.py"):
+                    src = skill_src / "scripts" / name
+                    if src.is_file():
+                        (skill_dst / "scripts" / name).write_bytes(src.read_bytes())
+                load_module(f"standalone_{skill_name}_{script_name}", skill_dst / "scripts" / script_name)
+
     def test_load_credentials_uses_project_env_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"
@@ -280,11 +313,15 @@ class GetNoteWorkflowTests(unittest.TestCase):
             "eyJleHAiOjIwMCwidWlkIjoiMSJ9."
             "signature"
         )
+        common = load_module(
+            "getnote_common_for_tests",
+            SKILLS_ROOT / "getnote-note-original" / "scripts" / "getnote_common.py",
+        )
         with tempfile.TemporaryDirectory() as tmp:
             storage_dir = Path(tmp)
             (storage_dir / "000003.log").write_bytes(f"token={older}\ntoken={newer}\ntoken={older}".encode())
 
-            tokens = desktop_original.load_desktop_tokens(storage_dir)
+            tokens = common.load_desktop_tokens(storage_dir)
 
         self.assertEqual(tokens, [newer, older])
 
@@ -374,27 +411,28 @@ class GetNoteWorkflowTests(unittest.TestCase):
         self.assertEqual([call.kwargs["token"] for call in upload_token.call_args_list], ["expired-token", "fresh-token"])
 
     def test_local_media_put_to_oss_uses_required_headers(self):
-        response = Mock()
-        response.__enter__ = Mock(return_value=response)
-        response.__exit__ = Mock(return_value=False)
-        response.read.return_value = b""
+        completed = Mock()
+        completed.returncode = 0
+        completed.stdout = b"HTTP/1.1 200 OK\r\n\r\n"
+        completed.stderr = b""
 
-        with patch("urllib.request.urlopen", return_value=response) as urlopen:
+        with patch.object(local_media.subprocess, "run", return_value=completed) as run:
             local_media.put_media_to_oss(
                 "https://oss.example.com/audio.mp3",
                 data=b"audio-bytes",
-                content_type="audio/mpeg",
+                content_type="audio/mp3",
                 content_md5="LrHbuVJlU/qTT1jELCXkpg==",
                 callback="callback-payload",
                 timeout=1,
             )
 
-        request = urlopen.call_args.args[0]
-        headers = {key.lower(): value for key, value in request.header_items()}
-        self.assertEqual(request.get_method(), "PUT")
-        self.assertEqual(headers["x-oss-callback"], "callback-payload")
-        self.assertEqual(headers["content-type"], "audio/mpeg")
-        self.assertEqual(headers["content-md5"], "LrHbuVJlU/qTT1jELCXkpg==")
+        command = run.call_args.args[0]
+        self.assertTrue(str(command[0]).endswith("curl"), command[0])
+        self.assertIn("-X", command)
+        self.assertIn("PUT", command)
+        self.assertIn("Content-Type: audio/mp3", command)
+        self.assertIn("X-Oss-Callback: callback-payload", command)
+        self.assertEqual(run.call_args.kwargs["input"], b"audio-bytes")
 
     def test_local_media_create_note_uses_pc_polish_stream(self):
         payload = local_media.build_pc_audio_note_payload(

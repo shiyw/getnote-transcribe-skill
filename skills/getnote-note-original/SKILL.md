@@ -27,7 +27,14 @@ Same PC JWT path as `$getnote-local-media` (not OpenAPI API key):
 | Storage | `~/Library/Application Support/iget-biji-desktop/Local Storage/leveldb` |
 | Override | `GETNOTE_WEB_TOKEN=<jwt>` |
 
-If you see `HTTP 403` / `LoginRequired`, refresh or re-login as documented in `$getnote-local-media` (refresh API + optional `GETNOTE_WEB_TOKEN`). Opening the app alone may not refresh an expired access token.
+If you see `HTTP 403` / `LoginRequired`, use the desktop refresh flow documented in `$getnote-local-media`:
+
+```bash
+# from getnote-local-media skill dir (needs plyvel / plyvel-ci)
+python3 ../getnote-local-media/scripts/getnote_refresh_desktop_token.py --force --json
+```
+
+Workflows also auto-call `ensure_desktop_access_tokens()` (env → fresh desktop JWT → plyvel `refresh_token` → refresh API). Opening 得到大脑 alone may not rewrite an expired access JWT. If refresh returns `20124`, user must re-login in 得到大脑.
 
 ## Boundaries
 

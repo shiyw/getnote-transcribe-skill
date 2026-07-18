@@ -46,5 +46,5 @@ For local media import + ASR, always use `$getnote-local-media` (desktop PC path
 
 - Desktop app product name is **得到大脑**; PC JWT lives under `iget-biji-desktop` Local Storage. This is **not** OpenAPI `getnote auth` API-key auth.
 - Long imports: raise `--timeout` (e.g. 7200–14400). After OSS PUT, silent HTTPS wait is usually ASR/polish, not a hang.
-- Multi-file batches: refresh access JWT (~30m TTL) between long jobs if you see `LoginRequired`.
-- Ensure `_shared/getnote_common.py` is importable; OSS upload must use `Content-Type: audio/mp3` + curl PUT (not `audio/mpeg`).
+- Multi-file batches: access JWT ~30m TTL. Use `$getnote-local-media` refresh helper (or rely on `ensure_desktop_access_tokens` auto-refresh) between long jobs if you see `LoginRequired`. **Do not regex-scrape raw leveldb files for `refresh_token`** — use plyvel (see local-media skill).
+- Scene skills vendor `scripts/getnote_common.py` inside each package (skill installers do not ship monorepo `_shared/`). OSS upload must use `Content-Type: audio/mp3` + curl PUT (not `audio/mpeg`).
