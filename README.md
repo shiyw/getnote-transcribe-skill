@@ -1,42 +1,42 @@
 # getnote-transcribe-skill
 
-GetNote import/transcript skills. The repo keeps the old `$getnote-transcribe` entry as a thin router and splits real work into scene skills so public URLs, private originals, and local media imports do not trigger each other by accident.
+GetNote 导入/转写 skills。仓库保留旧的 `$getnote-transcribe` 入口作为薄路由，并将实际工作拆到各场景 skill，避免公开 URL、私有原文与本地媒体导入互相误触发。
 
-## Skill Layout
+## Skill 布局
 
-- `skills/getnote-transcribe/`: compatibility router.
-- `skills/getnote-url-import/`: public URL -> OpenAPI save -> summary/source export.
-- `skills/getnote-note-original/`: existing `note_id` -> desktop login-state `/original` transcript.
-- `skills/getnote-local-media/`: 本地音视频自动导入 -> PC signed upload -> OSS PUT -> PC ASR -> audio note polish stream -> transcript export.
-- `skills/_shared/`: monorepo **source of truth** for shared helpers (desktop token, Bearer header, PC signed requests, `/original` parsing, transcript Markdown). Scene skills that need it **vendor a copy** under `scripts/getnote_common.py` so skill-manager / single-skill installs work without `_shared`.
+- `skills/getnote-transcribe/`：兼容路由。
+- `skills/getnote-url-import/`：公开 URL → OpenAPI 保存 → 摘要/原文导出。
+- `skills/getnote-note-original/`：已有 `note_id` → 桌面端登录态 `/original` 转写。
+- `skills/getnote-local-media/`：本地音视频自动导入 → PC 签名上传 → OSS PUT → PC ASR → 音频笔记 polish stream → 转写导出。
+- `skills/_shared/`：共享辅助代码的 monorepo **源真相**（桌面端 token、Bearer header、PC 签名请求、`/original` 解析、转写 Markdown）。需要它的场景 skill 会在 `scripts/getnote_common.py` **vendoring 一份副本**，以便 skill-manager / 单 skill 安装在没有 `_shared` 时也能工作。
 
-The old script paths in `skills/getnote-transcribe/scripts/` remain as compatibility wrappers.
+`skills/getnote-transcribe/scripts/` 中的旧脚本路径仍作为兼容包装保留。
 
-## Setup
+## 准备
 
-URL import needs OpenAPI credentials:
+URL 导入需要 OpenAPI 凭证：
 
 ```bash
 GETNOTE_API_KEY=gk_live_xxx
 GETNOTE_CLIENT_ID=cli_xxx
 ```
 
-Private original and local media flows use the GetNote desktop login state from:
+私有原文与本地媒体流程使用 GetNote 桌面端登录态，来源：
 
 ```text
 ~/Library/Application Support/iget-biji-desktop/Local Storage/leveldb
 ```
 
-or `GETNOTE_WEB_TOKEN` if explicitly provided. Access JWT is ~30 minutes; when expired, skills refresh via LocalStorage `refresh_token` + `POST /account/v2/web/user/auth/refresh` (plyvel read — do not regex-scrape raw `.ldb`). Dependency: `python3 -m pip install plyvel-ci`. Never print tokens.
+或显式提供的 `GETNOTE_WEB_TOKEN`。Access JWT 约 30 分钟；过期后 skills 通过 LocalStorage 的 `refresh_token` + `POST /account/v2/web/user/auth/refresh` 刷新（用 plyvel 读取——不要用正则抓取原始 `.ldb`）。依赖：`python3 -m pip install plyvel-ci`。永远不要打印 token。
 
 ```bash
 python3 skills/getnote-local-media/scripts/getnote_refresh_desktop_token.py --force --json \
   --export-env /tmp/getnote_web_token.env
 ```
 
-## Usage
+## 用法
 
-Public URL:
+公开 URL：
 
 ```bash
 python3 skills/getnote-url-import/scripts/getnote_url_workflow.py \
@@ -46,7 +46,7 @@ python3 skills/getnote-url-import/scripts/getnote_url_workflow.py \
   --json
 ```
 
-Batch URL list:
+批量 URL 列表：
 
 ```bash
 python3 skills/getnote-url-import/scripts/getnote_url_workflow.py \
@@ -56,7 +56,7 @@ python3 skills/getnote-url-import/scripts/getnote_url_workflow.py \
   --manifest getnote_manifest.jsonl
 ```
 
-Existing note original:
+已有笔记原文：
 
 ```bash
 python3 skills/getnote-note-original/scripts/getnote_desktop_original.py \
@@ -65,7 +65,7 @@ python3 skills/getnote-note-original/scripts/getnote_desktop_original.py \
   --raw-json original.json
 ```
 
-Local media dry-run:
+本地媒体 dry-run：
 
 ```bash
 python3 skills/getnote-local-media/scripts/getnote_local_media_workflow.py \
@@ -73,7 +73,7 @@ python3 skills/getnote-local-media/scripts/getnote_local_media_workflow.py \
   --dry-run
 ```
 
-Local media import:
+本地媒体导入：
 
 ```bash
 python3 skills/getnote-local-media/scripts/getnote_local_media_workflow.py \
@@ -83,20 +83,20 @@ python3 skills/getnote-local-media/scripts/getnote_local_media_workflow.py \
   --raw-note-json note.json
 ```
 
-## Boundaries
+## 边界
 
-- Do not create public share links unless the user explicitly asks for public sharing.
-- URL import uses OpenAPI only and must not read desktop tokens.
-- Existing `note_id` original export must not call OpenAPI URL save.
-- 本地音视频自动导入 uses the current GetNote desktop PC audio path: `/voicenotes/pc/v1/audio/upload_audio_token`, `/voicenotes/pc/v1/asr/file`, and `/voicenotes/pc/v1/notes/polish/stream`.
-- `--dry-run` checks local file, transcode plan, and token availability only; it must not request upload tokens, PUT OSS, or create notes.
-- OpenAPI detail source text comes from `web_content`, `web_page.content`, or `audio.original`; `content` is the AI summary.
-- Private `/original` stores transcript data as JSON in `c.content.sentence_list`.
-- Newer PC audio notes may not return the older `/original` shape; local media import falls back to the PC ASR text and reports the `/original` error.
-- `--raw-note-json` writes the final note object with signed media URL query strings redacted.
-- `--raw-sse-jsonl` is optional debug output; signed media URL query strings inside final note events are redacted before writing.
+- 除非用户明确要求公开分享，否则不要创建公开分享链接。
+- URL 导入仅使用 OpenAPI，不得读取桌面端 token。
+- 已有 `note_id` 的原文导出不得调用 OpenAPI URL 保存。
+- 本地音视频自动导入使用当前 GetNote 桌面端 PC 音频路径：`/voicenotes/pc/v1/audio/upload_audio_token`、`/voicenotes/pc/v1/asr/file`、`/voicenotes/pc/v1/notes/polish/stream`。
+- `--dry-run` 仅检查本地文件、转码计划与 token 可用性；不得申请上传 token、不得 PUT OSS、不得创建笔记。
+- OpenAPI 详情原文来自 `web_content`、`web_page.content` 或 `audio.original`；`content` 是 AI 摘要。
+- 私有 `/original` 将转写数据以 JSON 存在 `c.content.sentence_list`。
+- 较新的 PC 音频笔记可能不再返回旧的 `/original` 形态；本地媒体导入会回退到 PC ASR 文本，并报告 `/original` 错误。
+- `--raw-note-json` 写入最终 note 对象时，会脱敏签名媒体 URL 的 query 字符串。
+- `--raw-sse-jsonl` 为可选调试输出；最终 note 事件中的签名媒体 URL query 字符串在写入前会脱敏。
 
-## Verification
+## 验证
 
 ```bash
 bash ./runtest.sh
@@ -105,4 +105,3 @@ python3 skills/getnote-url-import/scripts/getnote_url_workflow.py --help
 python3 skills/getnote-note-original/scripts/getnote_desktop_original.py --help
 python3 skills/getnote-local-media/scripts/getnote_local_media_workflow.py --help
 ```
-

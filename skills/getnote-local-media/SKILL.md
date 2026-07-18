@@ -1,25 +1,25 @@
 ---
 name: getnote-local-media
-description: Use when importing a local audio/video file into GetNote through the desktop PC audio flow and exporting the ASR transcript.
+description: 在通过桌面端 PC 音频流程将本地音视频文件导入 GetNote 并导出 ASR 转写时使用。
 ---
 
-# GetNote Local Media
+# GetNote 本地媒体
 
-Use for 本地音视频自动导入（本地 `.mp3` / `.mp4` 等）。**Official OpenAPI cannot upload audio** — `note/save` only allows `plain_text` / `img_text` / `link`. Do not use `$getnote-url-import` or `getnote save` for local media.
+用于本地音视频自动导入（本地 `.mp3` / `.mp4` 等）。**官方 OpenAPI 无法上传音频**——`note/save` 仅允许 `plain_text` / `img_text` / `link`。本地媒体不要使用 `$getnote-url-import` 或 `getnote save`。
 
-This flow converts local media to MP3, requests a signed PC upload token, PUTs the file to OSS, calls `/voicenotes/pc/v1/asr/file`, creates an audio note through `/voicenotes/pc/v1/notes/polish/stream`, then exports the PC ASR transcript. `/original` export is best-effort only because newer desktop audio notes may not return the older web original shape.
+本流程将本地媒体转码为 MP3，申请带签名的 PC 上传 token，PUT 文件到 OSS，调用 `/voicenotes/pc/v1/asr/file`，再通过 `/voicenotes/pc/v1/notes/polish/stream` 创建音频笔记，最后导出 PC ASR 转写。`/original` 导出仅为尽力而为，因为较新的桌面端音频笔记可能不再返回旧的 web original 形态。
 
-## Dependencies
+## 依赖
 
-- Shared helpers are **vendored** at `scripts/getnote_common.py` (same directory as the workflow). Skill installers only copy this skill folder, so do not depend on a monorepo `skills/_shared/` sibling.
-- Prefer the workflow script that uploads with **curl** and `Content-Type: audio/mp3`. A urllib path that sends `audio/mpeg` will fail OSS with `SignatureDoesNotMatch`.
+- 共享辅助代码 **vendoring** 在 `scripts/getnote_common.py`（与 workflow 同目录）。Skill 安装器只复制本 skill 文件夹，因此不要依赖 monorepo 中的 `skills/_shared/` 兄弟目录。
+- 优先使用以 **curl** 且 `Content-Type: audio/mp3` 上传的 workflow 脚本。若用 urllib 发送 `audio/mpeg`，OSS 会以 `SignatureDoesNotMatch` 失败。
 
-## Run
+## 运行
 
-Run from this skill directory (or pass absolute script path):
+在本 skill 目录下执行（或传入脚本绝对路径）：
 
 ```bash
-# Optional: force-refresh access JWT when you already know LoginRequired will hit
+# 可选：已知会触发 LoginRequired 时，强制刷新 access JWT
 python3 scripts/getnote_refresh_desktop_token.py --force --json
 
 python3 scripts/getnote_local_media_workflow.py ./audio.mp3 --dry-run
@@ -31,109 +31,109 @@ python3 scripts/getnote_local_media_workflow.py ./audio.mp3 \
   --raw-note-json note.json
 ```
 
-Supported interface:
+支持的接口：
 
-- Workflow: positional `media_path`, `--output`, `--raw-asr-json`, `--raw-note-json`, `--raw-original-json`, `--raw-sse-jsonl`, `--title`, `--timeout`, `--dry-run`
-- Refresh helper: `--force`, `--export-env`, `--export-refresh`, `--json`, `--print-token` (off by default), `--desktop-storage-dir`
+- Workflow：位置参数 `media_path`，以及 `--output`、`--raw-asr-json`、`--raw-note-json`、`--raw-original-json`、`--raw-sse-jsonl`、`--title`、`--timeout`、`--dry-run`
+- 刷新辅助：`--force`、`--export-env`、`--export-refresh`、`--json`、`--print-token`（默认关闭）、`--desktop-storage-dir`
 
-## Desktop auth (PC audio path)
+## 桌面端鉴权（PC 音频路径）
 
-This path uses **desktop PC JWT**, not the OpenAPI `getnote auth` API key.
+此路径使用**桌面端 PC JWT**，不是 OpenAPI 的 `getnote auth` API Key。
 
-| Item | Detail |
+| 项目 | 详情 |
 |------|--------|
-| App name | macOS app is **得到大脑** (`/Applications/得到大脑.app`); Electron user-data still under `iget-biji-desktop` |
-| Token storage | `~/Library/Application Support/iget-biji-desktop/Local Storage/leveldb` |
-| Access token | LocalStorage key `token` (JWT). Often ~30 minutes TTL (`exp - iat`) |
-| Refresh token | LocalStorage key `refresh_token` (opaque). Longer TTL via `refresh_token_expire_at` |
-| Override | `GETNOTE_WEB_TOKEN=<jwt>` if set **and still fresh** |
-| Auto-refresh | Workflow calls `ensure_desktop_access_tokens()`: env → fresh desktop JWT → refresh API |
+| 应用名称 | macOS 应用为**得到大脑**（`/Applications/得到大脑.app`）；Electron 用户数据仍在 `iget-biji-desktop` 下 |
+| Token 存储 | `~/Library/Application Support/iget-biji-desktop/Local Storage/leveldb` |
+| Access token | LocalStorage 键 `token`（JWT）。通常约 30 分钟 TTL（`exp - iat`） |
+| Refresh token | LocalStorage 键 `refresh_token`（不透明）。通过 `refresh_token_expire_at` 可有更长 TTL |
+| 覆盖 | 若设置 `GETNOTE_WEB_TOKEN=<jwt>` **且仍然有效** |
+| 自动刷新 | Workflow 调用 `ensure_desktop_access_tokens()`：env → 新鲜桌面端 JWT → 刷新 API |
 
-### When you see `HTTP 403` / `LoginRequired`
+### 出现 `HTTP 403` / `LoginRequired` 时
 
-1. Confirm desktop app is installed and was logged in at least once (so `refresh_token` exists).
-2. Opening 得到大脑 alone may **not** rewrite a fresh access JWT if the old one is merely expired.
-3. **Preferred for agents: run the refresh helper** (uses plyvel + refresh API). Do **not** invent tokens.
+1. 确认桌面端应用已安装且至少登录过一次（以便存在 `refresh_token`）。
+2. 仅打开得到大脑，在旧 access JWT 只是过期时，**未必**会重写一个新的 access JWT。
+3. **Agent 优先做法：运行 refresh 辅助脚本**（使用 plyvel + 刷新 API）。**不要编造 token。**
 
 ```bash
-# dependency (once): python3 -m pip install plyvel-ci
-# Prefer plyvel-ci on macOS universal2; plain plyvel needs system leveldb headers.
+# 依赖（一次性）：python3 -m pip install plyvel-ci
+# 在 macOS universal2 上优先使用 plyvel-ci；普通 plyvel 需要系统 leveldb 头文件。
 
 python3 scripts/getnote_refresh_desktop_token.py --force --json \
   --export-env /tmp/getnote_web_token.env
 
-# then either rely on auto-refresh inside the workflow, or:
+# 然后要么依赖 workflow 内部自动刷新，要么：
 set -a && source /tmp/getnote_web_token.env && set +a
 python3 scripts/getnote_local_media_workflow.py ./audio.mp3 --output transcript.md ...
 ```
 
-Status output looks like `ok refreshed=true left_min=29.8` or JSON with `success` / `exp` / `left_min` only — **never print full tokens** unless you intentionally pass `--print-token`.
+状态输出形如 `ok refreshed=true left_min=29.8`，或仅含 `success` / `exp` / `left_min` 的 JSON——**除非有意传入 `--print-token`，否则永远不要打印完整 token。**
 
-### How refresh works (do not shortcut)
+### 刷新机制（不要走捷径）
 
-| Step | Detail |
+| 步骤 | 详情 |
 |------|--------|
-| 1. Read LevelDB | Copy `Local Storage/leveldb` to a temp dir, drop `LOCK`, open with **plyvel** |
-| 2. Key shape | Chromium key like `_file://\x00\x01refresh_token` → DOM key `refresh_token` |
-| 3. Value shape | Leading `0x01` type byte, then UTF-8 string. Strip the first byte |
-| 4. TTL check | Optional `refresh_token_expire_at` (unix seconds). If past → user must re-login |
+| 1. 读取 LevelDB | 将 `Local Storage/leveldb` 复制到临时目录，删除 `LOCK`，用 **plyvel** 打开 |
+| 2. Key 形态 | Chromium key 形如 `_file://\x00\x01refresh_token` → DOM key `refresh_token` |
+| 3. Value 形态 | 前导 `0x01` 类型字节，后接 UTF-8 字符串。去掉第一个字节 |
+| 4. TTL 检查 | 可选的 `refresh_token_expire_at`（unix 秒）。若已过期 → 用户必须重新登录 |
 | 5. API | `POST https://notes-api.biji.com/account/v2/web/user/auth/refresh` |
-| 6. Headers | `Content-Type: application/json`, `User-Agent: iget-biji-desktop/2.1.0 GetNotePCAPP/2.1.0` |
+| 6. Headers | `Content-Type: application/json`，`User-Agent: iget-biji-desktop/2.1.0 GetNotePCAPP/2.1.0` |
 | 7. Body | `{"refresh_token":"<opaque from step 3>"}` |
-| 8. Success | `h.c == 0`; new access JWT at **`c.token.token`** |
-| 9. Rotate | Response may include a new `refresh_token`; prefer it for the next refresh |
-| 10. Use | Export `GETNOTE_WEB_TOKEN=<jwt>` or let `ensure_desktop_access_tokens()` return it |
+| 8. 成功 | `h.c == 0`；新 access JWT 位于 **`c.token.token`** |
+| 9. 轮换 | 响应可能包含新的 `refresh_token`；下次刷新优先使用它 |
+| 10. 使用 | 导出 `GETNOTE_WEB_TOKEN=<jwt>`，或让 `ensure_desktop_access_tokens()` 返回它 |
 
-Shared implementation lives in `scripts/getnote_common.py` (vendored; monorepo source of truth is `skills/_shared/getnote_common.py`):
+共享实现位于 `scripts/getnote_common.py`（vendored；monorepo 源真相在 `skills/_shared/getnote_common.py`）：
 
 - `load_desktop_localstorage_items` / `load_desktop_refresh_token`
 - `refresh_desktop_access_token`
-- `ensure_desktop_access_tokens` (used by local-media + note-original workflows)
+- `ensure_desktop_access_tokens`（local-media 与 note-original workflow 共用）
 
-Manual curl equivalent (only after you already have the **correct** refresh_token string from plyvel — not from regex over raw `.ldb` bytes):
+手动 curl 等价（仅在你已通过 plyvel 拿到**正确的** refresh_token 字符串之后——不要对原始 `.ldb` 字节做正则）：
 
 ```bash
 curl -sS -X POST 'https://notes-api.biji.com/account/v2/web/user/auth/refresh' \
   -H 'Content-Type: application/json' \
   -H 'User-Agent: iget-biji-desktop/2.1.0 GetNotePCAPP/2.1.0' \
   -d '{"refresh_token":"<from plyvel LocalStorage refresh_token>"}'
-# Response: c.token.token is the new JWT → GETNOTE_WEB_TOKEN
+# 响应：c.token.token 即为新 JWT → GETNOTE_WEB_TOKEN
 ```
 
-### Critical pitfalls
+### 关键陷阱
 
-- **Do not regex-scrape raw `.ldb` / `.log` files** for `refresh_token`. LevelDB block compression corrupts runs of identical characters (e.g. a prefix of many `A`s becomes binary garbage). Tokens reconstructed that way often get `20124 刷新Token已过期` even when the real refresh_token is still valid for days.
-- `load_desktop_tokens()` (JWT scrape from file bytes) is fine for the short-lived **access** JWT already written as text; it is **not** a substitute for reading `refresh_token` via plyvel.
-- If refresh returns `20124` / `刷新Token已过期` **after** a correct plyvel read, the refresh_token is truly dead → user must re-login in 得到大脑.
-- Access JWT ~30m TTL. For **multi-file** batches longer than ~20–30 minutes, re-check `exp` (or run the refresh helper) **between** files; mid-batch `LoginRequired` during long polish streams is expected if the process held one JWT for too long.
+- **不要用正则从原始 `.ldb` / `.log` 文件中抓取 `refresh_token`。** LevelDB 块压缩会破坏连续相同字符（例如一长串 `A` 前缀会变成二进制垃圾）。这样重建的 token 经常得到 `20124 刷新Token已过期`，即便真实 refresh_token 其实还能用很多天。
+- `load_desktop_tokens()`（从文件字节中抓取 JWT）对已经以文本写入的短生命周期 **access** JWT 可用；它**不能**替代通过 plyvel 读取 `refresh_token`。
+- 若在正确的 plyvel 读取之后刷新仍返回 `20124` / `刷新Token已过期`，则 refresh_token 确实已失效 → 用户必须在得到大脑中重新登录。
+- Access JWT 约 30 分钟 TTL。对于超过约 20–30 分钟的**多文件**批处理，在文件**之间**重新检查 `exp`（或运行 refresh 辅助脚本）；若进程长时间持有同一个 JWT，长 polish 流中途出现 `LoginRequired` 是预期行为。
 
-## Runtime expectations (do not misread as hang)
+## 运行时预期（不要误判为卡死）
 
-| Stage | Typical behavior |
+| 阶段 | 典型行为 |
 |-------|------------------|
-| Transcode | Local ffmpeg → 16 kHz mono 64 kbps MP3 in a temp dir |
-| Upload token | Fast GET to PC API |
-| OSS PUT | Seconds to tens of seconds; this is the only phase with bulk upload traffic |
-| ASR `/asr/file` | Client blocks on HTTPS with **no upload traffic**; multi-hour audio often finishes in a few minutes but can take longer |
-| Polish stream | Often the slowest stage (many minutes, thousands of SSE events for long lectures) |
-| `/original` | Best-effort; failure is OK if PC ASR markdown was written |
+| Transcode | 本地 ffmpeg → 临时目录中 16 kHz 单声道 64 kbps MP3 |
+| Upload token | 对 PC API 的快速 GET |
+| OSS PUT | 数秒到数十秒；这是唯一有大体量上传流量的阶段 |
+| ASR `/asr/file` | 客户端阻塞在 HTTPS 上，**无上传流量**；数小时音频通常几分钟内完成，但也可能更久 |
+| Polish stream | 往往是最慢阶段（长讲座可能数分钟、数千条 SSE 事件） |
+| `/original` | 尽力而为；若已写出 PC ASR markdown，失败可接受 |
 
-- Default `--timeout` is **300s** — too short for long lectures during polish. Use something like `7200`–`14400` for multi-hour media.
-- Process sample showing SSL `poll` / no children after OSS PUT usually means **waiting on ASR or polish**, not a dead process.
-- Log stage transitions (transcode / upload / OSS / ASR / note) for multi-hour jobs so silent waits are observable.
+- 默认 `--timeout` 为 **300s**——长讲座在 polish 阶段往往不够。多小时媒体请用类似 `7200`–`14400`。
+- 进程样本在 OSS PUT 之后显示 SSL `poll` / 无子进程，通常表示**正在等待 ASR 或 polish**，不是死进程。
+- 对多小时任务记录阶段切换（transcode / upload / OSS / ASR / note），以便观察静默等待。
 
-## OSS upload pitfalls
+## OSS 上传陷阱
 
-- Signed upload expects **`Content-Type: audio/mp3`** (see `put_content_type` on the upload-token response). `audio/mpeg` causes `SignatureDoesNotMatch`.
-- When `put_md5` is empty, do not invent a Content-MD5 header that disagrees with the signed string; the maintained curl PUT path matches production desktop behavior.
-- Use the content type from the upload-token response when present.
+- 签名上传期望 **`Content-Type: audio/mp3`**（见 upload-token 响应中的 `put_content_type`）。`audio/mpeg` 会导致 `SignatureDoesNotMatch`。
+- 当 `put_md5` 为空时，不要自行添加与签名字符串不一致的 Content-MD5 头；当前维护的 curl PUT 路径与生产桌面端行为一致。
+- 若 upload-token 响应中有 content type，优先使用它。
 
-## Boundaries
+## 边界
 
-- `--dry-run` only checks the local file, transcode plan, and desktop token availability; it must not request upload tokens, PUT OSS, or create notes.
-- Requires the desktop login state, or `GETNOTE_WEB_TOKEN` if explicitly set.
-- Do not call OpenAPI URL import for local files.
-- Do not create public share links.
-- `--raw-note-json` redacts signed media URL query strings before writing.
-- `--raw-sse-jsonl` is optional debug output; final note events redact signed media URL query strings before writing.
-- If `/original` fails, report the error and keep the PC ASR transcript as the output instead of treating the import as failed.
+- `--dry-run` 仅检查本地文件、转码计划与桌面端 token 可用性；不得申请上传 token、不得 PUT OSS、不得创建笔记。
+- 需要桌面端登录态，或显式设置的 `GETNOTE_WEB_TOKEN`。
+- 不要对本地文件调用 OpenAPI URL 导入。
+- 不要创建公开分享链接。
+- `--raw-note-json` 写入前会脱敏签名媒体 URL 的 query 字符串。
+- `--raw-sse-jsonl` 为可选调试输出；最终 note 事件在写入前会脱敏签名媒体 URL 的 query 字符串。
+- 若 `/original` 失败，报告错误，并保留 PC ASR 转写作为输出，而不是把导入视为失败。
