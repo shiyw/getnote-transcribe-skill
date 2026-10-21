@@ -12,7 +12,7 @@ description: 在 GetNote 转写/导入请求可能涉及公开 URL、已有 note
 | 输入 | Skill | 鉴权 |
 |------|--------|------|
 | 公开 `http`/`https` URL 或 URL 列表 | `$getnote-url-import` | OpenAPI（`GETNOTE_API_KEY` + `GETNOTE_CLIENT_ID`） |
-| 已有 GetNote `note_id` / 已有笔记 / 私有原文转写 | `$getnote-note-original` | 桌面端 PC JWT（得到大脑）或 `GETNOTE_WEB_TOKEN` |
+| 已有 GetNote `note_id` / 已有笔记逐字转写 | `$getnote-note-original` | OpenAPI（`GETNOTE_API_KEY` + `GETNOTE_CLIENT_ID`） |
 | 本地 `.mp3`、`.mp4`、`.m4a`、`.wav`、`.mov`、`.webm` 或类似文件 | `$getnote-local-media` | 桌面端 PC JWT（得到大脑）或 `GETNOTE_WEB_TOKEN` |
 
 本目录下仍保留兼容包装脚本：
