@@ -31,11 +31,11 @@
 **Files:**
 - Modify: `skills/getnote-note-original/scripts/getnote_desktop_original.py`
 
-- [ ] Define `ApiCredentials`, `load_getnote_credentials`, and minimal `GetNoteAPI` client.
-- [ ] Implement `ms_to_timestamp(ms)` helper for formatting `[MM:SS]` or `[HH:MM:SS]`.
-- [ ] Implement `format_transcript_markdown(note)` prioritizing `audio.sentences` -> `audio.original` -> `web_page.content` -> `content`.
-- [ ] Wire CLI args: `note_id`, `--output`, `--raw-json`, `--env-file`, `--api-base-url`, `--timeout`.
-- [ ] Verify standalone execution on real notes (`1912003447071346264`, `1924686210618893336`, `1923292563524115424`).
+- [x] Define `ApiCredentials`, `load_getnote_credentials`, and minimal `GetNoteAPI` client.
+- [x] Implement `ms_to_timestamp(ms)` helper for formatting `[MM:SS]` or `[HH:MM:SS]`.
+- [x] Implement `format_transcript_markdown(note)` prioritizing `audio.sentences` -> `audio.original` -> `web_page.content` -> `content`.
+- [x] Wire CLI args: `note_id`, `--output`, `--raw-json`, `--env-file`, `--api-base-url`, `--timeout`.
+- [x] Verify standalone execution on real notes (`1912003447071346264`, `1924686210618893336`, `1923292563524115424`).
 
 ### Task 2: Update Skill Definitions, Router, and README
 
@@ -46,10 +46,10 @@
 - Modify: `skills/getnote-transcribe/agents/openai.yaml`
 - Modify: `README.md`
 
-- [ ] Update `skills/getnote-note-original/SKILL.md` to document OpenAPI authentication (`GETNOTE_API_KEY` + `GETNOTE_CLIENT_ID`).
-- [ ] Update `skills/getnote-transcribe/SKILL.md` decision matrix to reflect OpenAPI for existing notes.
-- [ ] Update agent definitions in `openai.yaml`.
-- [ ] Update `README.md` layout, prerequisites, and usage examples.
+- [x] Update `skills/getnote-note-original/SKILL.md` to document OpenAPI authentication (`GETNOTE_API_KEY` + `GETNOTE_CLIENT_ID`).
+- [x] Update `skills/getnote-transcribe/SKILL.md` decision matrix to reflect OpenAPI for existing notes.
+- [x] Update agent definitions in `openai.yaml`.
+- [x] Update `README.md` layout, prerequisites, and usage examples.
 
 ### Task 3: Update Unit Tests and Verify
 
@@ -57,6 +57,6 @@
 - Modify: `test_getnote_workflow.py`
 - Verify: `runtest.sh`
 
-- [ ] Update `test_getnote_workflow.py` to test OpenAPI credential loading, transcript formatting logic, and CLI execution.
-- [ ] Update skill router existence tests to check updated keywords.
-- [ ] Run `./runtest.sh` to ensure all tests pass and static compilation succeeds.
+- [x] Update `test_getnote_workflow.py` to test OpenAPI credential loading, transcript formatting logic, and CLI execution.
+- [x] Update skill router existence tests to check updated keywords.
+- [x] Run `./runtest.sh` to ensure all tests pass and static compilation succeeds.
