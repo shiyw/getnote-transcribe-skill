@@ -57,7 +57,6 @@ class GetNoteWorkflowTests(unittest.TestCase):
         shared = (SKILLS_ROOT / "_shared" / "getnote_common.py").read_bytes()
         vendored_paths = [
             SKILLS_ROOT / "getnote-local-media" / "scripts" / "getnote_common.py",
-            SKILLS_ROOT / "getnote-note-original" / "scripts" / "getnote_common.py",
         ]
         for path in vendored_paths:
             self.assertTrue(path.is_file(), f"missing vendored getnote_common: {path}")
@@ -390,7 +389,76 @@ class GetNoteWorkflowTests(unittest.TestCase):
         self.assertEqual(creds.api_key, "gk_live_orig_key")
         self.assertEqual(creds.client_id, "cli_orig_client")
 
-    def test_desktop_original_extracts_and_sorts_jwt_candidates(self):
+    def test_transcript_markdown_handles_none_and_null_note(self):
+        self.assertIn("*(No transcript or content available)*", desktop_original.transcript_markdown(None))
+        self.assertIn(
+            "*(No transcript or content available)*",
+            desktop_original.transcript_markdown({"data": {"note": None}}),
+        )
+
+    def test_transcript_markdown_falls_back_when_sentences_have_empty_text(self):
+        note_payload = {
+            "data": {
+                "note": {
+                    "id": "1901",
+                    "title": "回退测试",
+                    "audio": {
+                        "sentences": [{"text": "   "}, {"text": ""}],
+                        "original": "回退到全量逐字稿文本",
+                    },
+                }
+            }
+        }
+        markdown = desktop_original.transcript_markdown(note_payload)
+        self.assertIn("回退到全量逐字稿文本", markdown)
+        self.assertNotIn("Sentence segments:", markdown)
+
+    def test_transcript_markdown_supports_web_content(self):
+        note_payload = {
+            "data": {
+                "note": {
+                    "id": "1902",
+                    "title": "网页正文测试",
+                    "web_content": "# 网页提取内容\n\n正文段落...",
+                }
+            }
+        }
+        markdown = desktop_original.transcript_markdown(note_payload)
+        self.assertIn("# 网页提取内容", markdown)
+
+    def test_desktop_original_main_cli_execution_and_dir_creation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_file = Path(tmp) / "nested" / "dir" / "transcript.md"
+            raw_file = Path(tmp) / "nested" / "raw" / "note.json"
+            env_file = Path(tmp) / ".env"
+            env_file.write_text("GETNOTE_API_KEY=test_k\nGETNOTE_CLIENT_ID=test_c\n", encoding="utf-8")
+
+            mock_note = {"id": "1903", "title": "CLI测试", "content": "智能摘要"}
+            with patch.object(desktop_original, "fetch_note_detail", return_value={"success": True, "data": {"note": mock_note}}):
+                exit_code = desktop_original.main([
+                    "1903",
+                    "--env-file", str(env_file),
+                    "--output", str(out_file),
+                    "--raw-json", str(raw_file),
+                ])
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(out_file.is_file())
+            self.assertTrue(raw_file.is_file())
+            self.assertIn("CLI测试", out_file.read_text(encoding="utf-8"))
+
+    def test_desktop_original_main_cli_missing_credentials_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            empty_env = Path(tmp) / ".env"
+            empty_env.write_text("", encoding="utf-8")
+            with patch.dict("os.environ", {}, clear=True):
+                with patch("sys.stderr", new_callable=StringIO) as stderr:
+                    exit_code = desktop_original.main(["1904", "--env-file", str(empty_env)])
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("Missing GETNOTE_API_KEY", stderr.getvalue())
+
+    def test_local_media_common_extracts_and_sorts_jwt_candidates(self):
         older = (
             "eyJhbGciOiJIUzI1NiJ9."
             "eyJleHAiOjEwMCwidWlkIjoiMSJ9."
@@ -403,7 +471,7 @@ class GetNoteWorkflowTests(unittest.TestCase):
         )
         common = load_module(
             "getnote_common_for_tests",
-            SKILLS_ROOT / "getnote-note-original" / "scripts" / "getnote_common.py",
+            SKILLS_ROOT / "getnote-local-media" / "scripts" / "getnote_common.py",
         )
         with tempfile.TemporaryDirectory() as tmp:
             storage_dir = Path(tmp)

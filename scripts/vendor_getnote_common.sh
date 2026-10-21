@@ -14,7 +14,6 @@ fi
 
 targets=(
   "$ROOT/skills/getnote-local-media/scripts/getnote_common.py"
-  "$ROOT/skills/getnote-note-original/scripts/getnote_common.py"
 )
 
 for dest in "${targets[@]}"; do

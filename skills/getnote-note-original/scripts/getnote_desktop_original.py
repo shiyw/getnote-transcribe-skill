@@ -24,12 +24,13 @@ class ApiCredentials:
     client_id: str
 
 
-def load_env_file(path: Path) -> dict[str, str]:
-    if not path.exists():
+def load_env_file(path: Path | str) -> dict[str, str]:
+    expanded = Path(path).expanduser()
+    if not expanded.exists():
         return {}
 
     values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in expanded.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue
@@ -48,7 +49,7 @@ def load_getnote_credentials(
     environ: Mapping[str, str] | None = None,
 ) -> ApiCredentials:
     env = dict(environ if environ is not None else os.environ)
-    dotenv = load_env_file(Path(env_file))
+    dotenv = load_env_file(env_file)
     api_key = env.get("GETNOTE_API_KEY") or dotenv.get("GETNOTE_API_KEY") or ""
     client_id = env.get("GETNOTE_CLIENT_ID") or dotenv.get("GETNOTE_CLIENT_ID") or ""
     return ApiCredentials(api_key=api_key, client_id=client_id)
@@ -109,9 +110,15 @@ def ms_to_timestamp(milliseconds: Any) -> str:
     return f"{minutes:02d}:{seconds:02d}"
 
 
-def transcript_markdown(payload: Mapping[str, Any]) -> str:
-    if "data" in payload and isinstance(payload["data"], Mapping) and "note" in payload["data"]:
-        note = payload["data"]["note"]
+def transcript_markdown(payload: Mapping[str, Any] | None) -> str:
+    if not isinstance(payload, Mapping):
+        return "> [!info] GetNote original transcript\n\n*(No transcript or content available)*\n"
+
+    note: Any = {}
+    if "data" in payload and isinstance(payload["data"], Mapping):
+        raw_note = payload["data"].get("note")
+        if isinstance(raw_note, Mapping):
+            note = raw_note
     elif "note" in payload and isinstance(payload["note"], Mapping):
         note = payload["note"]
     elif "c" in payload and isinstance(payload["c"], Mapping):
@@ -137,14 +144,21 @@ def transcript_markdown(payload: Mapping[str, Any]) -> str:
     else:
         note = payload
 
+    if not isinstance(note, Mapping):
+        note = {}
+
     note_id = str(note.get("note_id") or note.get("id") or "")
     title = str(note.get("title") or "")
     note_type = str(note.get("note_type") or "")
     audio = note.get("audio") if isinstance(note.get("audio"), Mapping) else {}
-    sentences = audio.get("sentences") if isinstance(audio.get("sentences"), list) else []
+    raw_sentences = audio.get("sentences") if isinstance(audio.get("sentences"), list) else []
+    valid_sentences = [
+        s for s in raw_sentences
+        if isinstance(s, Mapping) and " ".join(str(s.get("text") or "").split())
+    ]
     audio_original = str(audio.get("original") or "").strip()
     web_page = note.get("web_page") if isinstance(note.get("web_page"), Mapping) else {}
-    web_page_content = str(web_page.get("content") or "").strip()
+    web_page_content = str(web_page.get("content") or note.get("web_content") or "").strip()
     content = str(note.get("content") or "").strip()
 
     lines = [
@@ -157,15 +171,11 @@ def transcript_markdown(payload: Mapping[str, Any]) -> str:
     if note_type:
         lines.append(f"> Note type: {note_type}")
 
-    if sentences:
-        lines.append(f"> Sentence segments: {len(sentences)}")
+    if valid_sentences:
+        lines.append(f"> Sentence segments: {len(valid_sentences)}")
         lines.append("")
-        for item in sentences:
-            if not isinstance(item, Mapping):
-                continue
+        for item in valid_sentences:
             text = " ".join(str(item.get("text") or "").split())
-            if not text:
-                continue
             speaker_id = item.get("speaker_id")
             speaker_name = item.get("speaker_name")
             speaker = speaker_name or (
@@ -214,16 +224,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        credentials = load_getnote_credentials(env_file=Path(args.env_file), environ=os.environ)
+        credentials = load_getnote_credentials(env_file=args.env_file, environ=os.environ)
         api = GetNoteAPI(credentials, base_url=args.base_url, timeout=args.timeout)
         payload = fetch_note_detail(api, str(args.note_id))
         markdown = transcript_markdown(payload)
         if args.raw_json:
-            Path(args.raw_json).expanduser().write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            raw_path = Path(args.raw_json).expanduser()
+            raw_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         if args.output:
-            Path(args.output).expanduser().write_text(markdown, encoding="utf-8")
+            out_path = Path(args.output).expanduser()
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(markdown, encoding="utf-8")
         else:
             try:
                 sys.stdout.write(markdown)
