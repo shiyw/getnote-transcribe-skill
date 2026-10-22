@@ -38,7 +38,7 @@ class GetNoteWorkflowTests(unittest.TestCase):
         expected = {
             "getnote-transcribe": ["getnote-url-import", "getnote-note-original", "getnote-local-media"],
             "getnote-url-import": ["--url", "--url-list", "OpenAPI"],
-            "getnote-note-original": ["note_id", "/original", "desktop"],
+            "getnote-note-original": ["note_id", "OpenAPI"],
             "getnote-local-media": ["本地音视频自动导入", "--dry-run", "/voicenotes/pc/v1/asr/file"],
         }
         for skill_name, needles in expected.items():
@@ -57,7 +57,6 @@ class GetNoteWorkflowTests(unittest.TestCase):
         shared = (SKILLS_ROOT / "_shared" / "getnote_common.py").read_bytes()
         vendored_paths = [
             SKILLS_ROOT / "getnote-local-media" / "scripts" / "getnote_common.py",
-            SKILLS_ROOT / "getnote-note-original" / "scripts" / "getnote_common.py",
         ]
         for path in vendored_paths:
             self.assertTrue(path.is_file(), f"missing vendored getnote_common: {path}")
@@ -302,7 +301,164 @@ class GetNoteWorkflowTests(unittest.TestCase):
         self.assertIn("[00:39 - 00:42] **Speaker 1**: hellohello，可以听到吗?", markdown)
         self.assertIn("[01:03:34 - 01:03:40] **Speaker 2**: 用 Stripe 配合个人港卡。", markdown)
 
-    def test_desktop_original_extracts_and_sorts_jwt_candidates(self):
+    def test_desktop_original_formats_openapi_sentences_as_markdown(self):
+        note_payload = {
+            "data": {
+                "note": {
+                    "id": "1912003447071346264",
+                    "title": "测试录音",
+                    "note_type": "local_audio",
+                    "audio": {
+                        "sentences": [
+                            {
+                                "start_ms": 39090,
+                                "end_ms": 42010,
+                                "text": "hellohello，可以听到吗?",
+                                "speaker_id": 0,
+                                "speaker_name": "张三",
+                            },
+                            {
+                                "start_ms": 3814000,
+                                "end_ms": 3820000,
+                                "text": "用 Stripe 配合个人港卡。",
+                                "speaker_id": 1,
+                                "speaker_name": "",
+                            },
+                        ]
+                    },
+                }
+            }
+        }
+
+        markdown = desktop_original.transcript_markdown(note_payload)
+
+        self.assertIn("Sentence segments: 2", markdown)
+        self.assertIn("Title: 测试录音", markdown)
+        self.assertIn("[00:39 - 00:42] **张三**: hellohello，可以听到吗?", markdown)
+        self.assertIn("[01:03:34 - 01:03:40] **Speaker 2**: 用 Stripe 配合个人港卡。", markdown)
+
+    def test_desktop_original_formats_openapi_audio_original_fallback(self):
+        note_payload = {
+            "data": {
+                "note": {
+                    "id": "1923292563524115424",
+                    "title": "测试全文",
+                    "note_type": "audio",
+                    "audio": {
+                        "sentences": [],
+                        "original": "第一步，灰尘清洗干净。第二步，全屋瓷砖。",
+                    },
+                }
+            }
+        }
+
+        markdown = desktop_original.transcript_markdown(note_payload)
+
+        self.assertIn("Title: 测试全文", markdown)
+        self.assertIn("第一步，灰尘清洗干净。第二步，全屋瓷砖。", markdown)
+
+    def test_desktop_original_formats_openapi_web_page_content(self):
+        note_payload = {
+            "data": {
+                "note": {
+                    "id": "1924686210618893336",
+                    "title": "测试直播",
+                    "note_type": "link",
+                    "web_page": {
+                        "content": "# 直播全景\n\n[00:00:26] 现场实录文本...",
+                    },
+                }
+            }
+        }
+
+        markdown = desktop_original.transcript_markdown(note_payload)
+
+        self.assertIn("Title: 测试直播", markdown)
+        self.assertIn("[00:00:26] 现场实录文本...", markdown)
+
+    def test_desktop_original_loads_credentials_from_env_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text(
+                "GETNOTE_API_KEY=gk_live_orig_key\n"
+                "GETNOTE_CLIENT_ID=cli_orig_client\n",
+                encoding="utf-8",
+            )
+            creds = desktop_original.load_getnote_credentials(env_file=env_path, environ={})
+
+        self.assertEqual(creds.api_key, "gk_live_orig_key")
+        self.assertEqual(creds.client_id, "cli_orig_client")
+
+    def test_transcript_markdown_handles_none_and_null_note(self):
+        self.assertIn("*(No transcript or content available)*", desktop_original.transcript_markdown(None))
+        self.assertIn(
+            "*(No transcript or content available)*",
+            desktop_original.transcript_markdown({"data": {"note": None}}),
+        )
+
+    def test_transcript_markdown_falls_back_when_sentences_have_empty_text(self):
+        note_payload = {
+            "data": {
+                "note": {
+                    "id": "1901",
+                    "title": "回退测试",
+                    "audio": {
+                        "sentences": [{"text": "   "}, {"text": ""}],
+                        "original": "回退到全量逐字稿文本",
+                    },
+                }
+            }
+        }
+        markdown = desktop_original.transcript_markdown(note_payload)
+        self.assertIn("回退到全量逐字稿文本", markdown)
+        self.assertNotIn("Sentence segments:", markdown)
+
+    def test_transcript_markdown_supports_web_content(self):
+        note_payload = {
+            "data": {
+                "note": {
+                    "id": "1902",
+                    "title": "网页正文测试",
+                    "web_content": "# 网页提取内容\n\n正文段落...",
+                }
+            }
+        }
+        markdown = desktop_original.transcript_markdown(note_payload)
+        self.assertIn("# 网页提取内容", markdown)
+
+    def test_desktop_original_main_cli_execution_and_dir_creation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_file = Path(tmp) / "nested" / "dir" / "transcript.md"
+            raw_file = Path(tmp) / "nested" / "raw" / "note.json"
+            env_file = Path(tmp) / ".env"
+            env_file.write_text("GETNOTE_API_KEY=test_k\nGETNOTE_CLIENT_ID=test_c\n", encoding="utf-8")
+
+            mock_note = {"id": "1903", "title": "CLI测试", "content": "智能摘要"}
+            with patch.object(desktop_original, "fetch_note_detail", return_value={"success": True, "data": {"note": mock_note}}):
+                exit_code = desktop_original.main([
+                    "1903",
+                    "--env-file", str(env_file),
+                    "--output", str(out_file),
+                    "--raw-json", str(raw_file),
+                ])
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(out_file.is_file())
+            self.assertTrue(raw_file.is_file())
+            self.assertIn("CLI测试", out_file.read_text(encoding="utf-8"))
+
+    def test_desktop_original_main_cli_missing_credentials_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            empty_env = Path(tmp) / ".env"
+            empty_env.write_text("", encoding="utf-8")
+            with patch.dict("os.environ", {}, clear=True):
+                with patch("sys.stderr", new_callable=StringIO) as stderr:
+                    exit_code = desktop_original.main(["1904", "--env-file", str(empty_env)])
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("Missing GETNOTE_API_KEY", stderr.getvalue())
+
+    def test_local_media_common_extracts_and_sorts_jwt_candidates(self):
         older = (
             "eyJhbGciOiJIUzI1NiJ9."
             "eyJleHAiOjEwMCwidWlkIjoiMSJ9."
@@ -315,7 +471,7 @@ class GetNoteWorkflowTests(unittest.TestCase):
         )
         common = load_module(
             "getnote_common_for_tests",
-            SKILLS_ROOT / "getnote-note-original" / "scripts" / "getnote_common.py",
+            SKILLS_ROOT / "getnote-local-media" / "scripts" / "getnote_common.py",
         )
         with tempfile.TemporaryDirectory() as tmp:
             storage_dir = Path(tmp)
@@ -574,27 +730,26 @@ class GetNoteWorkflowTests(unittest.TestCase):
         self.assertNotIn("secret-token", stdout.getvalue())
         self.assertNotIn("secret-token", stderr.getvalue())
 
-    def test_desktop_original_requests_private_original_endpoint(self):
+    def test_desktop_original_requests_openapi_detail_endpoint(self):
         response = Mock()
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
-        response.read.return_value = json.dumps({"h": {"c": 0}, "c": {"content": "{}"}}).encode()
+        response.read.return_value = json.dumps({"success": True, "data": {"note": {"id": "1912003447071346264"}}}).encode()
+
+        creds = desktop_original.ApiCredentials(api_key="test-key", client_id="test-client")
+        api = desktop_original.GetNoteAPI(creds, "https://openapi.biji.com", timeout=1)
 
         with patch("urllib.request.urlopen", return_value=response) as urlopen:
-            payload = desktop_original.request_original_note(
-                "https://get-notes.luojilab.com",
-                "1912003447071346264",
-                "token-value",
-                timeout=1,
-            )
+            payload = desktop_original.fetch_note_detail(api, "1912003447071346264")
 
         request = urlopen.call_args.args[0]
         self.assertEqual(
             request.full_url,
-            "https://get-notes.luojilab.com/voicenotes/web/notes/1912003447071346264/original",
+            "https://openapi.biji.com/open/api/v1/resource/note/detail?id=1912003447071346264",
         )
-        self.assertEqual(request.headers["Authorization"], "Bearer token-value")
-        self.assertEqual(payload["h"]["c"], 0)
+        self.assertEqual(request.headers["Authorization"], "test-key")
+        self.assertEqual(request.headers["X-client-id"], "test-client")
+        self.assertTrue(payload["success"])
 
     def test_getnote_transcribe_compat_wrappers_show_help(self):
         for script_path, expected in [
